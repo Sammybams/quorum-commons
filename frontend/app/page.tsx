@@ -150,13 +150,13 @@ export default function HomePage() {
 
       <header className="stitch-hero stitch-section" id="features">
         <div>
-          <p className="stitch-badge">Student body operating system</p>
+          <p className="stitch-badge">Community operating system</p>
           <h1>
-            Where student bodies <span>get things done.</span>
+            Where communities <span>get things done.</span>
           </h1>
           <p>
-            Run members, meetings, dues, budgets, campaigns, links, and announcements from one structured workspace
-            designed for campus leadership teams.
+            Run members, meetings, collections, budgets, campaigns, links, and announcements from one structured
+            workspace designed for cooperatives, student bodies, trade groups, and community teams.
           </p>
           <div className="stitch-hero-ctas">
             <Link href="/register" className="stitch-hero-primary">
@@ -172,7 +172,7 @@ export default function HomePage() {
             <header className="stitch-app-window-top">
               <div>
                 <strong>Quorum workspace</strong>
-                <span>Microsoft Learn Student Ambassadors Unilag</span>
+                <span>Balogun Traders Cooperative</span>
               </div>
               <div className="stitch-window-dots" aria-hidden="true">
                 <span />
@@ -247,8 +247,8 @@ export default function HomePage() {
         <div className="stitch-intro">
           <h2>Designed for impact, not admin clutter.</h2>
           <p>
-            Quorum brings CRM-like structure to student leadership: cleaner workflows, clearer permissions, and
-            better visibility across the whole body.
+            Quorum brings CRM-like structure to community operations: cleaner workflows, clearer permissions, and
+            better visibility across the whole group.
           </p>
         </div>
 
@@ -299,7 +299,7 @@ export default function HomePage() {
       <section className="stitch-pricing stitch-section" id="pricing">
         <div className="stitch-intro">
           <p className="eyebrow">Business model</p>
-          <h2>Role-based tiered pricing. Designed for student budgets.</h2>
+          <h2>Role-based tiered pricing. Designed for real community budgets.</h2>
           <p>
             Every workspace has a Super Admin, Subteam Leads, and Core Members. Pricing scales with team size, not
             with the wider membership.
@@ -330,7 +330,7 @@ export default function HomePage() {
       </section>
 
       <section className="stitch-proof stitch-section" id="resources">
-        <p>Trusted by visionary student leaders across</p>
+        <p>Built for ambitious organizers across</p>
         <div>
           <span>UNILAG</span>
           <span>OAU</span>
@@ -358,7 +358,7 @@ export default function HomePage() {
       <footer className="stitch-footer">
         <div>
           <BrandWordmark className="footer-logo" />
-          <p>© 2026 Quorum Student Systems. Empowering student leadership.</p>
+          <p>© 2026 Quorum. Empowering organized communities.</p>
         </div>
         <div>
           <a href="#">Terms</a>

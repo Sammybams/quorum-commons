@@ -20,14 +20,14 @@ const themeInitScript = `
 export const metadata = {
   metadataBase: new URL(APP_URL),
   title: "Quorum",
-  description: "Student body operating system",
+  description: "Community operating system",
   icons: {
     icon: "/brand/quorum-favicon.svg",
     shortcut: "/brand/quorum-favicon.svg",
   },
   openGraph: {
     title: "Quorum",
-    description: "Where student bodies get things done.",
+    description: "Where communities get things done.",
     images: ["/brand/quorum-icon.svg"],
   },
 };

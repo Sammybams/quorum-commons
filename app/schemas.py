@@ -656,6 +656,42 @@ class ChannelGroupSyncUpdate(BaseModel):
     sync_enabled: bool
 
 
+class WhatsAppGatewayConfigOut(BaseModel):
+    channel_id: int
+    inbound_url: str
+    secret_header: str = "x-quorum-channel-secret"
+    shared_secret: str
+    selected_group_ids: list[str] = Field(default_factory=list)
+
+
+class ChannelMessageOut(BaseModel):
+    id: int
+    workspace_id: int
+    channel_id: int
+    provider: str
+    external_group_id: str
+    group_name: str | None = None
+    sender_name: str | None = None
+    sender_handle: str | None = None
+    message_type: str
+    text: str
+    artifact_count: int = 0
+    received_at: datetime
+    created_at: datetime
+
+
+class MessageArtifactOut(BaseModel):
+    id: int
+    workspace_id: int
+    message_id: int
+    artifact_type: str
+    confidence: float
+    summary: str | None = None
+    extracted_payload: dict[str, object] = Field(default_factory=dict)
+    status: str
+    created_at: datetime
+
+
 class GoogleOAuthStartOut(BaseModel):
     authorization_url: str
 

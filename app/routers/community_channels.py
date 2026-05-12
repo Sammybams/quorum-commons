@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import require_workspace_permission
+from ..services.community_intelligence import CommunityIntelligenceError, analyze_message
 from ..services.telegram import TelegramServiceError, telegram_get_me, telegram_set_webhook
 
 
@@ -107,9 +108,9 @@ def _persist_channel_message(
 ):
     message_key = f"{group_link.external_group_id}:{external_message_id}" if external_message_id else None
     if message_key and db.find_one("channel_messages", {"workspace_id": workspace_id, "external_message_id": message_key}):
-        return
+        return None
 
-    db.insert(
+    message = db.insert(
         "channel_messages",
         {
             "workspace_id": workspace_id,
@@ -130,6 +131,103 @@ def _persist_channel_message(
     group_link["last_seen_at"] = received_at
     group_link["message_count"] = int(group_link.get("message_count") or 0) + 1
     db.save("channel_group_links", group_link)
+    return message
+
+
+def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | None = None):
+    existing = db.find_one("message_artifacts", {"workspace_id": message.workspace_id, "message_id": message.id})
+    if existing:
+        return existing
+
+    try:
+        artifact = analyze_message(text=message.text, provider=message.provider, group_name=group_name)
+    except CommunityIntelligenceError as exc:
+        return db.insert(
+            "message_artifacts",
+            {
+                "workspace_id": message.workspace_id,
+                "message_id": message.id,
+                "artifact_type": "other",
+                "confidence": 0.0,
+                "summary": f"Analysis failed: {str(exc)[:180]}",
+                "extracted_payload": {},
+                "status": "analysis_failed",
+            },
+        )
+
+    stored = db.insert(
+        "message_artifacts",
+        {
+            "workspace_id": message.workspace_id,
+            "message_id": message.id,
+            "artifact_type": artifact.artifact_type,
+            "confidence": artifact.confidence,
+            "summary": artifact.summary,
+            "extracted_payload": artifact.extracted_payload,
+            "status": "ready",
+        },
+    )
+    if artifact.artifact_type == "opportunity":
+        payload = artifact.extracted_payload or {}
+        db.insert(
+            "opportunities",
+            {
+                "workspace_id": message.workspace_id,
+                "message_id": message.id,
+                "source": message.provider,
+                "title": str(payload.get("title") or artifact.summary or message.text[:120]),
+                "description": message.text,
+                "location": payload.get("location"),
+                "trade_tags": payload.get("trade_tags") or [],
+                "deadline": payload.get("deadline"),
+                "contact": payload.get("contact"),
+                "status": "open",
+            },
+        )
+    return stored
+
+
+def _gateway_config_out(channel, selected_groups: list[str]) -> schemas.WhatsAppGatewayConfigOut:
+    return schemas.WhatsAppGatewayConfigOut(
+        channel_id=channel.id,
+        inbound_url=channel.get("webhook_url") or "",
+        shared_secret=channel.get("webhook_secret") or "",
+        selected_group_ids=selected_groups,
+    )
+
+
+def _message_out(db: MongoStore, message) -> schemas.ChannelMessageOut:
+    group = db.find_by_id("channel_group_links", message.get("group_link_id"))
+    artifact_count = db.count("message_artifacts", {"workspace_id": message.workspace_id, "message_id": message.id})
+    return schemas.ChannelMessageOut(
+        id=message.id,
+        workspace_id=message.workspace_id,
+        channel_id=message.channel_id,
+        provider=message.provider,
+        external_group_id=message.external_group_id,
+        group_name=group.group_name if group else None,
+        sender_name=message.get("sender_name"),
+        sender_handle=message.get("sender_handle"),
+        message_type=message.message_type,
+        text=message.text,
+        artifact_count=artifact_count,
+        received_at=message.received_at,
+        created_at=message.created_at,
+    )
+
+
+def _artifact_out(artifact) -> schemas.MessageArtifactOut:
+    return schemas.MessageArtifactOut(
+        id=artifact.id,
+        workspace_id=artifact.workspace_id,
+        message_id=artifact.message_id,
+        artifact_type=artifact.artifact_type,
+        confidence=float(artifact.get("confidence") or 0),
+        summary=artifact.get("summary"),
+        extracted_payload=artifact.get("extracted_payload") or {},
+        status=artifact.get("status") or "ready",
+        created_at=artifact.created_at,
+    )
 
 
 def _refresh_channel_counts(db: MongoStore, channel):
@@ -293,6 +391,49 @@ def list_channel_groups(
     return [_group_out(group) for group in groups]
 
 
+@router.get("/{channel_id}/gateway-config", response_model=schemas.WhatsAppGatewayConfigOut)
+def get_whatsapp_gateway_config(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    selected_groups = [
+        group.external_group_id
+        for group in db.find_many(
+            "channel_group_links",
+            {"workspace_id": workspace_id, "channel_id": channel_id, "sync_enabled": True},
+            sort=[("created_at", DESC)],
+        )
+    ]
+    return _gateway_config_out(channel, selected_groups)
+
+
+@inbound_router.get("/whatsapp/{channel_id}/gateway-config", response_model=schemas.WhatsAppGatewayConfigOut)
+def get_whatsapp_gateway_config_internal(
+    channel_id: int,
+    x_quorum_channel_secret: str | None = Header(default=None),
+    db: MongoStore = Depends(get_db),
+):
+    channel = db.find_one("community_channels", {"id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    if channel.get("webhook_secret") and channel.get("webhook_secret") != x_quorum_channel_secret:
+        raise HTTPException(status_code=403, detail="Invalid WhatsApp channel secret")
+    selected_groups = [
+        group.external_group_id
+        for group in db.find_many(
+            "channel_group_links",
+            {"workspace_id": channel.workspace_id, "channel_id": channel.id, "sync_enabled": True},
+            sort=[("created_at", DESC)],
+        )
+    ]
+    return _gateway_config_out(channel, selected_groups)
+
+
 @router.patch("/{channel_id}/groups/{group_id}", response_model=schemas.ChannelGroupLinkOut)
 def update_channel_group_sync(
     workspace_id: int,
@@ -313,6 +454,41 @@ def update_channel_group_sync(
     db.save("channel_group_links", group)
     _refresh_channel_counts(db, channel)
     return _group_out(group)
+
+
+@router.get("/messages", response_model=list[schemas.ChannelMessageOut])
+def list_channel_messages(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    messages = db.find_many("channel_messages", {"workspace_id": workspace_id}, sort=[("received_at", DESC)], limit=100)
+    return [_message_out(db, message) for message in messages]
+
+
+@router.get("/artifacts", response_model=list[schemas.MessageArtifactOut])
+def list_message_artifacts(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    artifacts = db.find_many("message_artifacts", {"workspace_id": workspace_id}, sort=[("created_at", DESC)], limit=100)
+    return [_artifact_out(artifact) for artifact in artifacts]
+
+
+@router.post("/messages/{message_id}/analyze", response_model=schemas.MessageArtifactOut)
+def analyze_channel_message(
+    workspace_id: int,
+    message_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    message = db.find_one("channel_messages", {"workspace_id": workspace_id, "id": message_id})
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    group = db.find_by_id("channel_group_links", message.get("group_link_id"))
+    artifact = _analyze_and_store_artifact(db, message=message, group_name=group.group_name if group else None)
+    return _artifact_out(artifact)
 
 
 @inbound_router.post("/telegram/{channel_id}/webhook", name="telegram_channel_webhook")
@@ -353,7 +529,7 @@ async def telegram_channel_webhook(
         return {"ok": True, "status": "ignored_unselected_group"}
 
     sender = message.get("from") or {}
-    _persist_channel_message(
+    stored_message = _persist_channel_message(
         db,
         workspace_id=channel.workspace_id,
         channel_id=channel.id,
@@ -367,6 +543,8 @@ async def telegram_channel_webhook(
         raw_payload=payload,
         received_at=received_at,
     )
+    if stored_message:
+        _analyze_and_store_artifact(db, message=stored_message, group_name=group.group_name)
     return {"ok": True, "status": "stored"}
 
 
@@ -411,7 +589,7 @@ async def whatsapp_channel_inbound(
     if not group.get("sync_enabled"):
         return {"ok": True, "status": "ignored_unselected_group"}
 
-    _persist_channel_message(
+    stored_message = _persist_channel_message(
         db,
         workspace_id=channel.workspace_id,
         channel_id=channel.id,
@@ -425,6 +603,8 @@ async def whatsapp_channel_inbound(
         raw_payload=payload,
         received_at=received_at,
     )
+    if stored_message:
+        _analyze_and_store_artifact(db, message=stored_message, group_name=group.group_name)
     channel["status"] = "connected"
     channel["last_error"] = None
     db.save("community_channels", channel)

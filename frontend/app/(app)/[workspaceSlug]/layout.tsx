@@ -17,6 +17,7 @@ const navItems = [
   { label: "Fundraising", icon: "payments", href: "campaigns" },
   { label: "Dues", icon: "receipt_long", href: "dues" },
   { label: "Budgets", icon: "account_balance", href: "budgets" },
+  { label: "Community Inbox", icon: "forum", href: "community-inbox" },
   { label: "Reports", icon: "analytics", href: "reports" },
   { label: "Tasks", icon: "checklist", href: "tasks" },
   { label: "Links", icon: "link", href: "links" },
@@ -50,6 +51,7 @@ export default function WorkspaceLayout({
     `${base}/campaigns`,
     `${base}/dues`,
     `${base}/budgets`,
+    `${base}/community-inbox`,
     `${base}/reports`,
     `${base}/tasks`,
     `${base}/links`,
@@ -146,7 +148,7 @@ export default function WorkspaceLayout({
           <img className="brand-logo-img" src="/brand/quorum-icon-circle.svg" alt="" />
           <span className="brand-copy">
             <strong>Quorum</strong>
-            <small title={workspaceLabel || "Student Body Admin"}>{workspaceLabel || "Student Body Admin"}</small>
+            <small title={workspaceLabel || "Community Admin"}>{workspaceLabel || "Community Admin"}</small>
           </span>
         </Link>
 

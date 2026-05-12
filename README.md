@@ -1,6 +1,6 @@
 # Quorum
 
-Quorum is a multi-tenant student-body operating system built for campus leadership teams. It gives a student union, faculty body, department association, club, or ambassador program one structured workspace for members, meetings, dues, events, budgets, campaigns, links, and announcements.
+Quorum is a multi-tenant community operating system built for organized groups. It gives cooperatives, student unions, faculty bodies, trade associations, clubs, and community teams one structured workspace for members, meetings, collections, events, budgets, campaigns, links, and announcements.
 
 The product is designed to feel less like a generic admin panel and more like a real operations system for executive councils.
 
@@ -11,9 +11,9 @@ The product is designed to feel less like a generic admin panel and more like a 
 
 ## What Quorum Does
 
-Quorum brings together the core workflows student leaders usually scatter across spreadsheets, WhatsApp, Google Forms, payment screenshots, and ad hoc notes:
+Quorum brings together the core workflows community operators usually scatter across spreadsheets, WhatsApp, Google Forms, payment screenshots, and ad hoc notes:
 
-- workspace creation for student bodies
+- workspace creation for community groups
 - multi-workspace sign-in for a single user
 - role-based admin access
 - member registry and invitations
@@ -351,7 +351,7 @@ cd frontend && npm run build
 
 Quorum is meant to be both:
 
-- a real operational workspace for student leadership teams
+- a real operational workspace for community leadership teams
 - a strong demoable system that clearly shows structure, governance, finance, communication, and AI assistance in one place
 
 That is why the repo includes both production-style workflows and a dedicated demo workspace path.

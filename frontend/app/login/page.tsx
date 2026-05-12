@@ -166,9 +166,9 @@ export default function LoginPage() {
           </div>
         </div>
         <div className="auth-visual-copy">
-          <p className="eyebrow">Student body operations</p>
-          <h1>Where student bodies get things done.</h1>
-          <p>Coordinate members, events, dues, campaigns, and public links from one considered workspace.</p>
+          <p className="eyebrow">Community operations</p>
+          <h1>Where communities get things done.</h1>
+          <p>Coordinate members, events, collections, campaigns, and public links from one considered workspace.</p>
         </div>
       </section>
 
@@ -261,7 +261,7 @@ export default function LoginPage() {
           )}
 
           <p className="auth-footnote">
-            New student body? <Link href="/register">Create your workspace</Link>
+            New community? <Link href="/register">Create your workspace</Link>
           </p>
         </div>
       </section>

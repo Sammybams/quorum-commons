@@ -364,7 +364,7 @@ export default function CampaignsClient({
               payments
             </span>
             <h2>No campaigns yet</h2>
-            <p>Create a fundraising campaign when your student body is ready to receive contributions.</p>
+            <p>Create a fundraising campaign when your community is ready to receive contributions.</p>
             <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
               Create first campaign
             </button>

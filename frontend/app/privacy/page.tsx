@@ -5,14 +5,14 @@ import ThemeToggle from "@/components/theme-toggle";
 
 export const metadata = {
   title: "Privacy Policy | Quorum",
-  description: "Privacy policy for Quorum, the student body operating system.",
+  description: "Privacy policy for Quorum, the community operating system.",
 };
 
 const policySections = [
   {
     title: "Information we collect",
     body: [
-      "Quorum collects the account, workspace, and operational information needed to run student-body administration. This can include names, email addresses, phone numbers, workspace slugs, member records, meeting notes, event RSVPs, financial records, and invitation activity.",
+      "Quorum collects the account, workspace, and operational information needed to run community administration. This can include names, email addresses, phone numbers, workspace slugs, member records, meeting notes, event RSVPs, financial records, and invitation activity.",
       "We also collect technical information needed to secure and operate the service, such as authentication tokens, audit timestamps, browser metadata, and usage logs.",
     ],
   },
