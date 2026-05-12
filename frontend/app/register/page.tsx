@@ -21,9 +21,13 @@ function slugify(input: string) {
 export default function RegisterPage() {
   const [step, setStep] = useState(1);
   const [organizationName, setOrganizationName] = useState("");
+  const [workspaceType, setWorkspaceType] = useState("student_body");
   const [university, setUniversity] = useState("");
   const [bodyType, setBodyType] = useState("department_body");
   const [faculty, setFaculty] = useState("");
+  const [market, setMarket] = useState("");
+  const [tradeCategory, setTradeCategory] = useState("");
+  const [city, setCity] = useState("");
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -79,6 +83,10 @@ export default function RegisterPage() {
           university?: string;
           body_type?: string;
           faculty?: string;
+          workspace_type?: string;
+          market?: string;
+          trade_category?: string;
+          city?: string;
           admin_name: string;
           admin_email: string;
           phone_number?: string;
@@ -88,9 +96,13 @@ export default function RegisterPage() {
       >("/auth/register", {
         organization_name: organizationName.trim(),
         workspace_slug: normalizedWorkspaceSlug,
-        university: university.trim() || undefined,
-        body_type: bodyType,
-        faculty: faculty.trim() || undefined,
+        university: workspaceType === "student_body" ? university.trim() || undefined : undefined,
+        body_type: workspaceType === "student_body" ? bodyType : undefined,
+        faculty: workspaceType === "student_body" ? faculty.trim() || undefined : undefined,
+        workspace_type: workspaceType,
+        market: workspaceType !== "student_body" ? market.trim() || undefined : undefined,
+        trade_category: workspaceType !== "student_body" ? tradeCategory.trim() || undefined : undefined,
+        city: workspaceType !== "student_body" ? city.trim() || undefined : undefined,
         admin_name: adminName.trim(),
         admin_email: adminEmail.trim().toLowerCase(),
         phone_number: phoneNumber.trim() || undefined,
@@ -178,8 +190,8 @@ export default function RegisterPage() {
             ))}
           </div>
           <p className="eyebrow">Workspace setup</p>
-          <h1>Set the stage for your student body.</h1>
-          <p>Start with the organization, then create the full-access admin account for the workspace.</p>
+          <h1>Set the stage for your community.</h1>
+          <p>Start with the organization profile, then create the full-access admin account for the workspace.</p>
         </aside>
 
         <section className="signup-card">
@@ -205,42 +217,90 @@ export default function RegisterPage() {
                 </label>
 
                 <label>
-                  University / Institution
-                  <span className="input-shell">
-                    <span className="material-symbols-outlined" aria-hidden="true">
-                      school
-                    </span>
-                    <input
-                      type="text"
-                      placeholder="Search for your institution"
-                      value={university}
-                      onChange={(event) => setUniversity(event.target.value)}
-                      required
-                    />
-                  </span>
+                  Workspace type
+                  <select value={workspaceType} onChange={(event) => setWorkspaceType(event.target.value)}>
+                    <option value="student_body">Student body</option>
+                    <option value="cooperative">Cooperative</option>
+                    <option value="market_association">Market association</option>
+                    <option value="savings_circle">Savings circle</option>
+                    <option value="trade_group">Trade group</option>
+                  </select>
                 </label>
 
-                <div className="form-two">
-                  <label>
-                    Body type
-                    <select value={bodyType} onChange={(event) => setBodyType(event.target.value)}>
-                      <option value="department_body">Department body</option>
-                      <option value="faculty_body">Faculty body</option>
-                      <option value="student_union">Student Union</option>
-                      <option value="club_association">Club or Association</option>
-                    </select>
-                  </label>
+                {workspaceType === "student_body" ? (
+                  <>
+                    <label>
+                      University / Institution
+                      <span className="input-shell">
+                        <span className="material-symbols-outlined" aria-hidden="true">
+                          school
+                        </span>
+                        <input
+                          type="text"
+                          placeholder="Search for your institution"
+                          value={university}
+                          onChange={(event) => setUniversity(event.target.value)}
+                          required
+                        />
+                      </span>
+                    </label>
 
-                  <label>
-                    Faculty / Department
-                    <input
-                      type="text"
-                      placeholder="Faculty of Arts"
-                      value={faculty}
-                      onChange={(event) => setFaculty(event.target.value)}
-                    />
-                  </label>
-                </div>
+                    <div className="form-two">
+                      <label>
+                        Body type
+                        <select value={bodyType} onChange={(event) => setBodyType(event.target.value)}>
+                          <option value="department_body">Department body</option>
+                          <option value="faculty_body">Faculty body</option>
+                          <option value="student_union">Student Union</option>
+                          <option value="club_association">Club or Association</option>
+                        </select>
+                      </label>
+
+                      <label>
+                        Faculty / Department
+                        <input
+                          type="text"
+                          placeholder="Faculty of Arts"
+                          value={faculty}
+                          onChange={(event) => setFaculty(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </>
+                ) : (
+                  <div className="form-two">
+                    <label>
+                      Market / Community base
+                      <input
+                        type="text"
+                        placeholder="Balogun Market"
+                        value={market}
+                        onChange={(event) => setMarket(event.target.value)}
+                        required
+                      />
+                    </label>
+
+                    <label>
+                      City
+                      <input
+                        type="text"
+                        placeholder="Lagos"
+                        value={city}
+                        onChange={(event) => setCity(event.target.value)}
+                      />
+                    </label>
+
+                    <label>
+                      Trade category
+                      <input
+                        type="text"
+                        placeholder="Textiles, food trading..."
+                        value={tradeCategory}
+                        onChange={(event) => setTradeCategory(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                )}
               </>
             ) : null}
 

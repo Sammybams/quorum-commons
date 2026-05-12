@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
-from ..payments import PaymentInitializationError, initialize_paystack_transaction, payment_callback_url
+from ..payments import PaymentInitializationError, initialize_collection_transaction, payment_callback_url, squad_configured
 from .campaigns import _contribution_out, _stream_out
 
 router = APIRouter(prefix="/public", tags=["public"])
@@ -161,24 +161,33 @@ def submit_public_contribution(
             raise HTTPException(status_code=404, detail="Funding stream not found")
 
     reference = f"QRM-CAMP-{uuid4().hex[:14].upper()}"
+    if not squad_configured():
+        raise HTTPException(status_code=400, detail="Squad is not configured on the server")
+    if not payload.contributor_email:
+        raise HTTPException(status_code=400, detail="Contributor email is required for Squad collections")
     checkout = None
-    if payload.contributor_email:
-        try:
-            checkout = initialize_paystack_transaction(
-                email=payload.contributor_email,
-                amount=payload.amount,
-                reference=reference,
-                callback_url=payment_callback_url(f"/donate/{campaign.slug}"),
-                metadata={
-                    "type": "campaign_contribution",
-                    "campaign_id": campaign.id,
-                    "campaign_slug": campaign.slug,
-                    "workspace_id": campaign.workspace_id,
-                    "stream_id": payload.stream_id,
-                },
-            )
-        except PaymentInitializationError as exc:
-            raise HTTPException(status_code=502, detail=f"Unable to initialize payment: {exc}") from exc
+    squad_integration = db.find_one("integrations", {"workspace_id": campaign.workspace_id, "provider": "squad", "status": "connected"})
+    if not squad_integration:
+        raise HTTPException(status_code=400, detail="Squad is not connected for this workspace")
+    provider = "squad"
+    duration_seconds = int((squad_integration or {}).get("default_duration_seconds") or 3600)
+    try:
+        checkout = initialize_collection_transaction(
+            email=payload.contributor_email,
+            amount=payload.amount,
+            reference=reference,
+            callback_url=payment_callback_url(f"/donate/{campaign.slug}"),
+            metadata={
+                "type": "campaign_contribution",
+                "campaign_id": campaign.id,
+                "campaign_slug": campaign.slug,
+                "workspace_id": campaign.workspace_id,
+                "stream_id": payload.stream_id,
+            },
+            duration_seconds=duration_seconds,
+        )
+    except PaymentInitializationError as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {exc}") from exc
 
     contribution = db.insert(
         "contributions",
@@ -189,8 +198,15 @@ def submit_public_contribution(
             "contributor_name": payload.contributor_name,
             "contributor_email": payload.contributor_email,
             "amount": payload.amount,
-            "method": "paystack" if checkout else "public",
+            "method": provider if checkout else "public",
+            "provider": provider if checkout else "public",
             "gateway_ref": reference,
+            "provider_transaction_ref": checkout.provider_transaction_ref if checkout else None,
+            "virtual_account_number": checkout.virtual_account_number if checkout else None,
+            "account_name": checkout.account_name if checkout else None,
+            "bank_name": checkout.bank_name if checkout else None,
+            "expires_at": checkout.expires_at if checkout else None,
+            "verification_status": "pending" if checkout else "not_required",
             "receipt_url": None,
             "is_anonymous": payload.is_anonymous,
             "status": "pending",
@@ -198,12 +214,34 @@ def submit_public_contribution(
             "confirmed_at": None,
         },
     )
+    if checkout and checkout.virtual_account_number:
+        db.insert(
+            "virtual_accounts",
+            {
+                "workspace_id": campaign.workspace_id,
+                "provider": checkout.provider,
+                "target_type": "campaign_contribution",
+                "target_id": contribution.id,
+                "reference": reference,
+                "external_account_number": checkout.virtual_account_number,
+                "account_name": checkout.account_name,
+                "bank_name": checkout.bank_name,
+                "expected_amount": payload.amount,
+                "expires_at": checkout.expires_at,
+                "status": "active",
+            },
+        )
 
     return schemas.PublicContributionResponse(
         contribution=_contribution_out(db, contribution),
         payment_reference=reference,
-        checkout_url=checkout.authorization_url if checkout else None,
-        access_code=checkout.access_code if checkout else None,
+        checkout_url=checkout.checkout_url,
+        access_code=checkout.access_code,
+        virtual_account_number=checkout.virtual_account_number,
+        account_name=checkout.account_name,
+        bank_name=checkout.bank_name,
+        expires_at=checkout.expires_at,
+        provider=checkout.provider,
     )
 
 

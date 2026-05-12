@@ -7,6 +7,8 @@ class WorkspaceBase(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     slug: str = Field(min_length=2, max_length=120)
     description: str | None = None
+    workspace_type: str = "student_body"
+    community_profile: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkspaceCreate(WorkspaceBase):
@@ -24,6 +26,8 @@ class WorkspaceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     slug: str | None = Field(default=None, min_length=2, max_length=120)
     description: str | None = None
+    workspace_type: str | None = None
+    community_profile: dict[str, str] | None = None
 
 
 class MemberBase(BaseModel):
@@ -31,6 +35,13 @@ class MemberBase(BaseModel):
     email: str
     role: str = "member"
     level: str | None = None
+    trade_category: str | None = None
+    location: str | None = None
+    languages: list[str] = Field(default_factory=list)
+    availability: str | None = None
+    opportunity_preferences: list[str] = Field(default_factory=list)
+    contribution_capacity: str | None = None
+    phone_number: str | None = None
 
 
 class MemberCreate(MemberBase):
@@ -92,6 +103,13 @@ class WorkspaceMemberOut(BaseModel):
     role: str
     role_key: str
     level: str | None = None
+    trade_category: str | None = None
+    location: str | None = None
+    languages: list[str] = Field(default_factory=list)
+    availability: str | None = None
+    opportunity_preferences: list[str] = Field(default_factory=list)
+    contribution_capacity: str | None = None
+    phone_number: str | None = None
     dues_status: str
     status: str
     is_general_member: bool
@@ -134,7 +152,14 @@ class DuesPaymentOut(BaseModel):
     member_name: str | None = None
     amount: float
     method: str
+    provider: str | None = None
     gateway_ref: str | None = None
+    provider_transaction_ref: str | None = None
+    virtual_account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
+    expires_at: str | None = None
+    verification_status: str | None = None
     receipt_url: str | None = None
     status: str
     confirmed_by_user_id: int | None = None
@@ -147,7 +172,11 @@ class DuesPaymentCheckoutResponse(BaseModel):
     payment_reference: str
     checkout_url: str | None = None
     access_code: str | None = None
-    provider: str = "paystack"
+    virtual_account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
+    expires_at: str | None = None
+    provider: str = "squad"
 
 
 class EventCreate(BaseModel):
@@ -266,7 +295,14 @@ class ContributionOut(BaseModel):
     contributor_email: str | None = None
     amount: float
     method: str
+    provider: str | None = None
     gateway_ref: str | None = None
+    provider_transaction_ref: str | None = None
+    virtual_account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
+    expires_at: str | None = None
+    verification_status: str | None = None
     receipt_url: str | None = None
     is_anonymous: bool
     status: str
@@ -294,7 +330,11 @@ class PublicContributionResponse(BaseModel):
     payment_reference: str
     checkout_url: str | None = None
     access_code: str | None = None
-    provider: str = "paystack"
+    virtual_account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
+    expires_at: str | None = None
+    provider: str = "squad"
 
 
 class LinkCreate(BaseModel):
@@ -424,6 +464,10 @@ class AuthRegisterRequest(BaseModel):
     university: str | None = None
     body_type: str | None = None
     faculty: str | None = None
+    workspace_type: str | None = None
+    market: str | None = None
+    trade_category: str | None = None
+    city: str | None = None
     admin_name: str = Field(min_length=2, max_length=120)
     admin_email: str
     phone_number: str | None = None
@@ -548,6 +592,68 @@ class IntegrationOut(BaseModel):
     connected_at: datetime | None = None
     expires_at: datetime | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class SquadIntegrationConfigRequest(BaseModel):
+    merchant_name: str | None = Field(default=None, min_length=2, max_length=120)
+    beneficiary_account: str | None = Field(default=None, min_length=10, max_length=10)
+    collection_mode: str = "dynamic_virtual_account"
+    default_duration_seconds: int = Field(default=3600, ge=60, le=86400)
+
+
+class VirtualAccountOut(BaseModel):
+    id: int
+    workspace_id: int
+    provider: str
+    target_type: str
+    target_id: int | None = None
+    reference: str
+    external_account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
+    expected_amount: float | None = None
+    expires_at: str | None = None
+    status: str
+    created_at: datetime
+
+
+class CommunityChannelOut(BaseModel):
+    id: int
+    workspace_id: int
+    provider: str
+    label: str
+    status: str
+    connected_at: datetime | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class TelegramChannelConnectRequest(BaseModel):
+    label: str = Field(min_length=2, max_length=120)
+    bot_token: str = Field(min_length=20)
+
+
+class WhatsAppChannelConnectRequest(BaseModel):
+    label: str = Field(min_length=2, max_length=120)
+    gateway_account_id: str | None = Field(default=None, min_length=2, max_length=120)
+
+
+class ChannelGroupLinkOut(BaseModel):
+    id: int
+    workspace_id: int
+    channel_id: int
+    provider: str
+    external_group_id: str
+    group_name: str
+    sync_enabled: bool
+    last_seen_at: datetime | None = None
+    last_message_at: datetime | None = None
+    message_count: int = 0
+    created_at: datetime
+
+
+class ChannelGroupSyncUpdate(BaseModel):
+    sync_enabled: bool
 
 
 class GoogleOAuthStartOut(BaseModel):

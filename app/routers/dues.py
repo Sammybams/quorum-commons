@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import models, schemas
 from ..database import DESC, MongoStore, get_db
-from ..payments import PaymentInitializationError, initialize_paystack_transaction, payment_callback_url
+from ..payments import PaymentInitializationError, initialize_collection_transaction, payment_callback_url, squad_configured
 from ..rbac import require_workspace_permission
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/dues-cycles", tags=["dues"])
@@ -89,18 +89,27 @@ def initialize_dues_checkout(
     email = payload.email or (user.email if user else None)
     amount = payload.amount or cycle.amount
     reference = f"QRM-DUES-{uuid4().hex[:14].upper()}"
+    if not squad_configured():
+        raise HTTPException(status_code=400, detail="Squad is not configured on the server")
     checkout = None
-    if email:
-        try:
-            checkout = initialize_paystack_transaction(
-                email=email,
-                amount=amount,
-                reference=reference,
-                callback_url=payment_callback_url(f"/workspaces/{workspace_id}/dues"),
-                metadata={"type": "dues_payment", "workspace_id": workspace_id, "cycle_id": cycle_id, "member_id": payload.member_id},
-            )
-        except PaymentInitializationError as exc:
-            raise HTTPException(status_code=502, detail=f"Unable to initialize payment: {exc}") from exc
+    squad_integration = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad", "status": "connected"})
+    if not squad_integration:
+        raise HTTPException(status_code=400, detail="Squad is not connected for this workspace")
+    if not email:
+        raise HTTPException(status_code=400, detail="An email address is required to generate a Squad virtual account")
+    provider = "squad"
+    duration_seconds = int((squad_integration or {}).get("default_duration_seconds") or 3600)
+    try:
+        checkout = initialize_collection_transaction(
+            email=email,
+            amount=amount,
+            reference=reference,
+            callback_url=payment_callback_url(f"/workspaces/{workspace_id}/dues"),
+            metadata={"type": "dues_payment", "workspace_id": workspace_id, "cycle_id": cycle_id, "member_id": payload.member_id},
+            duration_seconds=duration_seconds,
+        )
+    except PaymentInitializationError as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {exc}") from exc
 
     payment = db.insert(
         "dues_payments",
@@ -109,20 +118,49 @@ def initialize_dues_checkout(
             "cycle_id": cycle_id,
             "member_id": payload.member_id,
             "amount": amount,
-            "method": "paystack" if checkout else "manual",
+            "method": provider if checkout else "manual",
+            "provider": provider if checkout else "manual",
             "gateway_ref": reference,
+            "provider_transaction_ref": checkout.provider_transaction_ref if checkout else None,
+            "virtual_account_number": checkout.virtual_account_number if checkout else None,
+            "account_name": checkout.account_name if checkout else None,
+            "bank_name": checkout.bank_name if checkout else None,
+            "expires_at": checkout.expires_at if checkout else None,
+            "verification_status": "pending" if checkout else "not_required",
             "receipt_url": None,
-            "status": "initiated" if checkout else "pending",
+            "status": "initiated",
             "confirmed_by_user_id": None,
             "confirmed_at": None,
         },
     )
+    if checkout and checkout.virtual_account_number:
+        db.insert(
+            "virtual_accounts",
+            {
+                "workspace_id": workspace_id,
+                "provider": checkout.provider,
+                "target_type": "dues_payment",
+                "target_id": payment.id,
+                "reference": reference,
+                "external_account_number": checkout.virtual_account_number,
+                "account_name": checkout.account_name,
+                "bank_name": checkout.bank_name,
+                "expected_amount": amount,
+                "expires_at": checkout.expires_at,
+                "status": "active",
+            },
+        )
 
     return schemas.DuesPaymentCheckoutResponse(
         payment=_payment_out(db, payment),
         payment_reference=reference,
-        checkout_url=checkout.authorization_url if checkout else None,
-        access_code=checkout.access_code if checkout else None,
+        checkout_url=checkout.checkout_url,
+        access_code=checkout.access_code,
+        virtual_account_number=checkout.virtual_account_number,
+        account_name=checkout.account_name,
+        bank_name=checkout.bank_name,
+        expires_at=checkout.expires_at,
+        provider=checkout.provider,
     )
 
 
@@ -157,7 +195,14 @@ def _payment_out(db: MongoStore, payment: models.DuesPayment) -> schemas.DuesPay
         member_name=user.full_name if user else None,
         amount=payment.amount,
         method=payment.method,
+        provider=payment.get("provider") or payment.get("method"),
         gateway_ref=payment.get("gateway_ref"),
+        provider_transaction_ref=payment.get("provider_transaction_ref"),
+        virtual_account_number=payment.get("virtual_account_number"),
+        account_name=payment.get("account_name"),
+        bank_name=payment.get("bank_name"),
+        expires_at=payment.get("expires_at"),
+        verification_status=payment.get("verification_status"),
         receipt_url=payment.get("receipt_url"),
         status=payment.status,
         confirmed_by_user_id=payment.get("confirmed_by_user_id"),

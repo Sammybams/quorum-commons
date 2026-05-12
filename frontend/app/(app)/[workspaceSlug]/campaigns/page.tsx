@@ -29,7 +29,14 @@ type CampaignDetail = Campaign & {
     stream_name: string | null;
     amount: number;
     method: string;
+    provider?: string | null;
     gateway_ref: string | null;
+    provider_transaction_ref?: string | null;
+    virtual_account_number?: string | null;
+    account_name?: string | null;
+    bank_name?: string | null;
+    expires_at?: string | null;
+    verification_status?: string | null;
     status: string;
     created_at: string;
   }>;

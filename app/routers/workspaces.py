@@ -149,6 +149,14 @@ def update_workspace(
         workspace["name"] = values["name"].strip()
     if "description" in values:
         workspace["description"] = values["description"]
+    if "workspace_type" in values and values["workspace_type"] is not None:
+        workspace["workspace_type"] = values["workspace_type"].strip().lower()
+    if "community_profile" in values and values["community_profile"] is not None:
+        workspace["community_profile"] = {
+            key: value.strip()
+            for key, value in values["community_profile"].items()
+            if value is not None and str(value).strip()
+        }
 
     return db.save("workspaces", workspace)
 

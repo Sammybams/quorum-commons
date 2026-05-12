@@ -48,7 +48,7 @@ Quorum brings together the core workflows student leaders usually scatter across
 ### Finance
 - dues cycles
 - dues payments
-- Paystack initialization support
+- Squad virtual account collection support
 - campaign fundraising
 - contribution ledger
 - funding streams
@@ -242,12 +242,7 @@ MONGODB_CONNECTION_STRING=
 ANTHROPIC_API_KEY=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-GOOGLE_OAUTH_REDIRECT_URI=
-PAYSTACK_SECRET_KEY=
-FRONTEND_ORIGIN=
-APP_URL=
-PUBLIC_APP_URL=
-FRONTEND_URL=
+SQUAD_SECRET_KEY=
 ```
 
 Frontend examples are in `frontend/.env.example`.

@@ -55,7 +55,7 @@ Move the API toward these domains:
 10. `/api/v1/tasks`: tasks, statuses, linked records, assignee views.
 11. `/api/v1/announcements`: feed, targeting, scheduling, archive.
 12. `/api/v1/links`: short links, redirects, analytics.
-13. `/api/v1/integrations`: Paystack, Flutterwave, Google, Fireflies, Zoom.
+13. `/api/v1/integrations`: Squad, Google, Fireflies, Zoom.
 14. `/api/v1/webhooks`: payment and transcript webhooks.
 15. `/api/v1/notifications`: in-app notification feed and read state.
 16. `/api/v1/ai`: Claude transcript processing and narrative drafting.
@@ -230,7 +230,7 @@ Member payment flow:
 
 1. Member sees unpaid status.
 2. Clicks Pay now.
-3. Paystack or Flutterwave checkout opens.
+3. Squad collection details or hosted checkout open.
 4. Webhook marks payment paid.
 5. Member receives confirmation.
 
@@ -244,7 +244,7 @@ Implementation:
 
 1. Tables: `dues_cycles`, `dues_payments`, `manual_receipts`.
 2. Endpoints for cycle CRUD, payment initiation, webhook confirmation, receipt review, defaulter export.
-3. Integrations settings for Paystack/Flutterwave credentials.
+3. Integrations settings for Squad credentials.
 4. UI: dues overview cards, cycles list, create cycle modal/page, payment ledger, manual review queue, defaulter list.
 
 ### 4.7 Events
@@ -290,7 +290,7 @@ Implementation:
 1. Expand `Campaign` with deadline, cover_url, description, linked_budget_id.
 2. Add `FundingStream`, `Contribution`.
 3. Build campaign list, create campaign, campaign detail dashboard, stream breakdown, pending queue, contributor ledger, sponsorship logger.
-4. Build public donation page with Paystack/Flutterwave checkout initiation.
+4. Build public donation page with Squad collection initiation.
 
 ### 4.9 Meetings And Claude Intelligence
 
@@ -412,7 +412,7 @@ Settings sections:
 
 Integrations:
 
-1. Paystack/Flutterwave: API keys, verify, connect/disconnect.
+1. Squad: API key, verification, and connect/disconnect flow.
 2. Google: OAuth, Drive folder watch, Calendar matching.
 3. Fireflies: API key, verify, webhook registration.
 4. Zoom: OAuth and transcript webhook.
@@ -474,8 +474,8 @@ Goal: implement the primary value proposition.
 
 1. Dues cycle creation with breakdown and applicable levels.
 2. Member dues status.
-3. Paystack connection and checkout initiation.
-4. Paystack webhook for `charge.success`.
+3. Squad connection and collection initiation.
+4. Squad webhook for successful collections.
 5. Manual receipt upload and treasurer review queue.
 6. Defaulter list and CSV export.
 

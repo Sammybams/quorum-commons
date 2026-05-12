@@ -13,6 +13,11 @@ type Member = {
   level?: string | null;
   email?: string | null;
   role: string;
+  trade_category?: string | null;
+  location?: string | null;
+  languages?: string[];
+  availability?: string | null;
+  contribution_capacity?: string | null;
   dues_status?: string;
 };
 type Role = { id: number; name: string; key: string; is_system_role: boolean };
@@ -223,7 +228,7 @@ export default function MembersClient({
               group
             </span>
             <h2>No members yet</h2>
-            <p>Send an email invitation or create a bulk invite link for your workspace.</p>
+            <p>Send an email invitation or create a bulk invite link for your community.</p>
             <button type="button" className="btn-primary" onClick={() => setInviteOpen(true)}>
               Invite first member
             </button>
@@ -234,9 +239,9 @@ export default function MembersClient({
               <thead>
                 <tr>
                   <th>Member</th>
-                  <th>Level</th>
+                  <th>Profile</th>
                   <th>Role</th>
-                  <th>Dues</th>
+                  <th>Readiness</th>
                   <th>Email</th>
                 </tr>
               </thead>
@@ -246,15 +251,32 @@ export default function MembersClient({
                     <td>
                       <div className="member-name">
                         <span className="member-avatar">{initials(member.full_name)}</span>
-                        <strong>{member.full_name}</strong>
+                        <div>
+                          <strong>{member.full_name}</strong>
+                          {member.level ? <div>{member.level}</div> : null}
+                        </div>
                       </div>
                     </td>
-                    <td>{member.level || "-"}</td>
+                    <td>
+                      {member.trade_category || member.location || member.languages?.length ? (
+                        <>
+                          <div>{member.trade_category || "General member"}</div>
+                          <small>{member.location || member.languages?.join(", ") || "-"}</small>
+                        </>
+                      ) : (
+                        member.level || "-"
+                      )}
+                    </td>
                     <td>{member.role}</td>
                     <td>
-                      <span className={`status-pill ${member.dues_status?.toLowerCase() === "paid" ? "ok" : "pending"}`}>
-                        {member.dues_status || "Pending"}
-                      </span>
+                      <div>
+                        <span className={`status-pill ${member.dues_status?.toLowerCase() === "paid" ? "ok" : "pending"}`}>
+                          {member.dues_status || "Pending"}
+                        </span>
+                        {member.availability || member.contribution_capacity ? (
+                          <small>{member.availability || member.contribution_capacity}</small>
+                        ) : null}
+                      </div>
                     </td>
                     <td>{member.email || "-"}</td>
                   </tr>

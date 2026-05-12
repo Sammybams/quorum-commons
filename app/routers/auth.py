@@ -151,14 +151,27 @@ def _create_password_reset(db: MongoStore, user: models.User) -> None:
 def register(payload: schemas.AuthRegisterRequest, db: MongoStore = Depends(get_db)):
     workspace_slug = payload.workspace_slug.strip().lower()
     admin_email = payload.admin_email.strip().lower()
+    workspace_type = (payload.workspace_type or "student_body").strip().lower()
 
     if db.find_one("workspaces", {"slug": workspace_slug}):
         raise HTTPException(status_code=409, detail="Workspace slug already exists")
     if db.find_one("users", {"email": admin_email}):
         raise HTTPException(status_code=409, detail="This email already belongs to an account")
 
-    description_parts = [payload.university, payload.body_type, payload.faculty]
+    description_parts = [payload.university, payload.body_type, payload.faculty, payload.market, payload.trade_category, payload.city]
     description = " · ".join([part.strip() for part in description_parts if part and part.strip()]) or None
+    community_profile = {
+        key: value.strip()
+        for key, value in {
+            "university": payload.university,
+            "body_type": payload.body_type,
+            "faculty": payload.faculty,
+            "market": payload.market,
+            "trade_category": payload.trade_category,
+            "city": payload.city,
+        }.items()
+        if value and value.strip()
+    }
 
     user = db.insert(
         "users",
@@ -172,7 +185,14 @@ def register(payload: schemas.AuthRegisterRequest, db: MongoStore = Depends(get_
     )
     workspace = db.insert(
         "workspaces",
-        {"name": payload.organization_name.strip(), "slug": workspace_slug, "description": description, "owner_user_id": user.id},
+        {
+            "name": payload.organization_name.strip(),
+            "slug": workspace_slug,
+            "description": description,
+            "workspace_type": workspace_type,
+            "community_profile": community_profile,
+            "owner_user_id": user.id,
+        },
     )
 
     roles = ensure_default_roles(db, workspace.id)
@@ -185,6 +205,13 @@ def register(payload: schemas.AuthRegisterRequest, db: MongoStore = Depends(get_
             "user_id": user.id,
             "role_id": owner_role.id,
             "level": _creator_title_label(payload.admin_role),
+            "trade_category": payload.trade_category.strip() if payload.trade_category else None,
+            "location": payload.city.strip() if payload.city else None,
+            "languages": [],
+            "availability": None,
+            "opportunity_preferences": [],
+            "contribution_capacity": None,
+            "phone_number": payload.phone_number.strip() if payload.phone_number else None,
             "dues_status": "paid",
             "is_general_member": False,
             "status": "active",
@@ -199,6 +226,13 @@ def register(payload: schemas.AuthRegisterRequest, db: MongoStore = Depends(get_
             "email": user.email,
             "role": owner_role.name,
             "level": _creator_title_label(payload.admin_role),
+            "trade_category": payload.trade_category.strip() if payload.trade_category else None,
+            "location": payload.city.strip() if payload.city else None,
+            "languages": [],
+            "availability": None,
+            "opportunity_preferences": [],
+            "contribution_capacity": None,
+            "phone_number": payload.phone_number.strip() if payload.phone_number else None,
             "dues_status": "paid",
         },
     )

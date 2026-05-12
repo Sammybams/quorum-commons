@@ -8,6 +8,7 @@ from .routers import (
     auth,
     budgets,
     campaigns,
+    community_channels,
     dues,
     events,
     health,
@@ -54,6 +55,8 @@ app.include_router(invitations.router, prefix=api_prefix)
 app.include_router(invitations.public_router, prefix=api_prefix)
 app.include_router(integrations.router, prefix=api_prefix)
 app.include_router(integrations.callback_router, prefix=api_prefix)
+app.include_router(community_channels.router, prefix=api_prefix)
+app.include_router(community_channels.inbound_router, prefix=api_prefix)
 app.include_router(dues.router, prefix=api_prefix)
 app.include_router(dues.payments_router, prefix=api_prefix)
 app.include_router(events.router, prefix=api_prefix)
@@ -73,7 +76,7 @@ def root():
     return {
         "name": os.getenv("APP_NAME", "Quorum API"),
         "project": "Quorum",
-        "description": "Multi-tenant platform for student-body operations.",
+        "description": "Multi-tenant platform for community operations.",
         "api_prefix": api_prefix,
         "docs": app.docs_url,
         "openapi": app.openapi_url,

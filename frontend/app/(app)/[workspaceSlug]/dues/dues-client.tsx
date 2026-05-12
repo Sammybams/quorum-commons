@@ -12,7 +12,14 @@ type DuesPayment = {
   member_name?: string | null;
   amount: number;
   method: string;
+  provider?: string | null;
   gateway_ref?: string | null;
+  provider_transaction_ref?: string | null;
+  virtual_account_number?: string | null;
+  account_name?: string | null;
+  bank_name?: string | null;
+  expires_at?: string | null;
+  verification_status?: string | null;
   status: string;
   created_at: string;
 };
@@ -23,6 +30,10 @@ type CheckoutResponse = {
   checkout_url: string | null;
   access_code: string | null;
   provider: string;
+  virtual_account_number?: string | null;
+  account_name?: string | null;
+  bank_name?: string | null;
+  expires_at?: string | null;
 };
 
 export default function DuesClient({
@@ -211,7 +222,7 @@ export default function DuesClient({
 
         <aside className="side-stack">
           <article className="panel-card">
-            <h2>Generate payment link</h2>
+            <h2>Generate Squad collection details</h2>
             <form className="form-stack" onSubmit={initializeCheckout}>
               <label>
                 Cycle
@@ -244,19 +255,25 @@ export default function DuesClient({
                 />
               </label>
               <button type="submit" className="btn-secondary" disabled={loading || cycles.length === 0}>
-                Generate checkout
+                Generate payment details
               </button>
             </form>
 
             {checkout ? (
               <div className="payment-link-box">
                 <span>{checkout.payment_reference}</span>
+                <strong>Squad virtual account ready</strong>
+                <p>
+                  {checkout.account_name || "Account"} · {checkout.bank_name || "Bank"}
+                </p>
+                <p>{checkout.virtual_account_number || "Account number pending"}</p>
+                {checkout.expires_at ? <p>Expires: {checkout.expires_at}</p> : null}
                 {checkout.checkout_url ? (
                   <a className="btn-primary" href={checkout.checkout_url} target="_blank" rel="noreferrer">
-                    Open checkout
+                    Open hosted payment page
                   </a>
                 ) : (
-                  <p>Paystack key is not configured, so this payment is pending manual confirmation.</p>
+                  <p>Share this account number with the payer. Once Squad confirms the transfer, Quorum will update the ledger automatically.</p>
                 )}
               </div>
             ) : null}
@@ -275,7 +292,7 @@ export default function DuesClient({
               account_balance_wallet
             </span>
             <h3>No payments yet</h3>
-            <p>Paystack confirmations and manual receipts will appear here.</p>
+            <p>Squad confirmations and manual receipts will appear here.</p>
           </div>
         ) : (
           <div className="table-wrap">
@@ -284,8 +301,9 @@ export default function DuesClient({
                 <tr>
                   <th>Member</th>
                   <th>Amount</th>
-                  <th>Method</th>
+                  <th>Provider</th>
                   <th>Reference</th>
+                  <th>Collection</th>
                   <th>Status</th>
                   <th>Action</th>
                 </tr>
@@ -295,8 +313,18 @@ export default function DuesClient({
                   <tr key={payment.id}>
                     <td>{payment.member_name || "Unassigned payment"}</td>
                     <td>NGN {payment.amount.toLocaleString()}</td>
-                    <td>{payment.method}</td>
-                    <td>{payment.gateway_ref || "-"}</td>
+                    <td>{payment.provider || payment.method}</td>
+                    <td>{payment.gateway_ref || payment.provider_transaction_ref || "-"}</td>
+                    <td>
+                      {payment.virtual_account_number ? (
+                        <>
+                          <div>{payment.virtual_account_number}</div>
+                          <small>{payment.bank_name || payment.account_name || "Squad virtual account"}</small>
+                        </>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
                     <td>
                       <span className={`status-pill ${payment.status === "paid" ? "ok" : "pending"}`}>
                         {payment.status}

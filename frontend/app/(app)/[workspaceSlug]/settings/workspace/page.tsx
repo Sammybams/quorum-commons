@@ -5,7 +5,14 @@ import { FormEvent, useEffect, useState } from "react";
 
 import { apiGet, apiPatch, apiPost } from "@/lib/api";
 
-type Workspace = { id: number; name: string; slug: string; description?: string };
+type Workspace = {
+  id: number;
+  name: string;
+  slug: string;
+  description?: string;
+  workspace_type?: string;
+  community_profile?: Record<string, string>;
+};
 type Member = { id: number; full_name: string; email?: string | null; role: string };
 type Role = { id: number; name: string; key: string };
 
@@ -24,6 +31,13 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
+  const [workspaceType, setWorkspaceType] = useState("student_body");
+  const [university, setUniversity] = useState("");
+  const [bodyType, setBodyType] = useState("");
+  const [faculty, setFaculty] = useState("");
+  const [market, setMarket] = useState("");
+  const [tradeCategory, setTradeCategory] = useState("");
+  const [city, setCity] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -44,6 +58,13 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
         setName(found.name);
         setSlug(found.slug);
         setDescription(found.description || "");
+        setWorkspaceType(found.workspace_type || "student_body");
+        setUniversity(found.community_profile?.university || "");
+        setBodyType(found.community_profile?.body_type || "");
+        setFaculty(found.community_profile?.faculty || "");
+        setMarket(found.community_profile?.market || "");
+        setTradeCategory(found.community_profile?.trade_category || "");
+        setCity(found.community_profile?.city || "");
         const [loadedMembers, loadedRoles] = await Promise.all([
           apiGet<Member[]>(`/workspaces/${found.id}/members`),
           apiGet<Role[]>(`/workspaces/${found.id}/roles`),
@@ -73,18 +94,43 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
     setSaved(false);
     setError(null);
     try {
-      const updated = await apiPatch<Workspace, { name: string; slug: string; description?: string }>(
+      const updated = await apiPatch<
+        Workspace,
+        {
+          name: string;
+          slug: string;
+          description?: string;
+          workspace_type: string;
+          community_profile: Record<string, string>;
+        }
+      >(
         `/workspaces/${workspace.id}`,
         {
           name,
           slug: slugify(slug),
           description,
+          workspace_type: workspaceType,
+          community_profile: {
+            ...(university.trim() ? { university: university.trim() } : {}),
+            ...(bodyType.trim() ? { body_type: bodyType.trim() } : {}),
+            ...(faculty.trim() ? { faculty: faculty.trim() } : {}),
+            ...(market.trim() ? { market: market.trim() } : {}),
+            ...(tradeCategory.trim() ? { trade_category: tradeCategory.trim() } : {}),
+            ...(city.trim() ? { city: city.trim() } : {}),
+          },
         },
       );
       setWorkspace(updated);
       setName(updated.name);
       setSlug(updated.slug);
       setDescription(updated.description || "");
+      setWorkspaceType(updated.workspace_type || "student_body");
+      setUniversity(updated.community_profile?.university || "");
+      setBodyType(updated.community_profile?.body_type || "");
+      setFaculty(updated.community_profile?.faculty || "");
+      setMarket(updated.community_profile?.market || "");
+      setTradeCategory(updated.community_profile?.trade_category || "");
+      setCity(updated.community_profile?.city || "");
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save workspace.");
@@ -125,7 +171,7 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
         <div>
           <p className="eyebrow">Settings</p>
           <h1>Workspace settings</h1>
-          <p>Manage the public identity and URL for this student body.</p>
+          <p>Manage the public identity and profile for this community.</p>
         </div>
         <div className="page-actions">
           <Link href={`/${params.workspaceSlug}/settings/integrations`} className="btn-secondary">
@@ -156,6 +202,47 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
               Portal tagline / description
               <textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
             </label>
+            <label>
+              Workspace type
+              <select value={workspaceType} onChange={(event) => setWorkspaceType(event.target.value)}>
+                <option value="student_body">Student body</option>
+                <option value="cooperative">Cooperative</option>
+                <option value="market_association">Market association</option>
+                <option value="savings_circle">Savings circle</option>
+                <option value="trade_group">Trade group</option>
+              </select>
+            </label>
+            {workspaceType === "student_body" ? (
+              <>
+                <label>
+                  University / Institution
+                  <input value={university} onChange={(event) => setUniversity(event.target.value)} />
+                </label>
+                <label>
+                  Body type
+                  <input value={bodyType} onChange={(event) => setBodyType(event.target.value)} placeholder="Faculty association, department union..." />
+                </label>
+                <label>
+                  Faculty / College
+                  <input value={faculty} onChange={(event) => setFaculty(event.target.value)} />
+                </label>
+              </>
+            ) : (
+              <>
+                <label>
+                  Market / Community base
+                  <input value={market} onChange={(event) => setMarket(event.target.value)} placeholder="Balogun Market" />
+                </label>
+                <label>
+                  Trade category
+                  <input value={tradeCategory} onChange={(event) => setTradeCategory(event.target.value)} placeholder="Textiles, food trading, logistics..." />
+                </label>
+                <label>
+                  City
+                  <input value={city} onChange={(event) => setCity(event.target.value)} placeholder="Lagos" />
+                </label>
+              </>
+            )}
             {error ? <p className="form-error">{error}</p> : null}
             {saved ? <p className="status-note">Workspace settings saved.</p> : null}
             <button type="submit" className="btn-primary" disabled={saving || loading}>
@@ -168,6 +255,16 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
           <p className="eyebrow">Public portal</p>
           <h2>{name || "Workspace name"}</h2>
           <p>{description || "Your public portal tagline will appear here."}</p>
+          <div className="mini-list">
+            <div>
+              <span>Type</span>
+              <strong>{workspaceType.replace(/_/g, " ")}</strong>
+            </div>
+            <div>
+              <span>Base</span>
+              <strong>{university || market || city || "Not set yet"}</strong>
+            </div>
+          </div>
           <div className="portal-preview">quorum.ng/{slug || "workspace"}</div>
         </article>
 

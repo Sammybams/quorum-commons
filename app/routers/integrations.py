@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
 from .. import schemas
-from ..database import MongoStore, get_db
+from ..database import DESC, MongoStore, get_db
+from ..payments import squad_base_url, squad_configured
 from ..rbac import require_workspace_permission
 from ..security import create_signed_token, decode_signed_token
 from ..services.google import (
@@ -54,6 +55,44 @@ def _google_integration_out(workspace_id: int, integration) -> schemas.Integrati
     )
 
 
+def _squad_integration_out(workspace_id: int, integration) -> schemas.IntegrationOut:
+    metadata = {
+        "collection_mode": str((integration or {}).get("collection_mode") or "dynamic_virtual_account"),
+        "beneficiary_account": str((integration or {}).get("beneficiary_account") or ""),
+        "merchant_name": str((integration or {}).get("merchant_name") or ""),
+        "default_duration_seconds": str((integration or {}).get("default_duration_seconds") or 3600),
+        "base_url": squad_base_url(),
+    }
+    return schemas.IntegrationOut(
+        provider="squad",
+        status=integration.get("status", "not_connected") if integration else "not_connected",
+        configured=squad_configured(),
+        connected_email=None,
+        scopes=[],
+        connected_at=integration.get("connected_at") if integration else None,
+        expires_at=None,
+        metadata=metadata,
+    )
+
+
+def _virtual_account_out(record) -> schemas.VirtualAccountOut:
+    return schemas.VirtualAccountOut(
+        id=record.id,
+        workspace_id=record.workspace_id,
+        provider=record.provider,
+        target_type=record.target_type,
+        target_id=record.get("target_id"),
+        reference=record.reference,
+        external_account_number=record.get("external_account_number"),
+        account_name=record.get("account_name"),
+        bank_name=record.get("bank_name"),
+        expected_amount=record.get("expected_amount"),
+        expires_at=record.get("expires_at"),
+        status=record.status,
+        created_at=record.created_at,
+    )
+
+
 @router.get("", response_model=list[schemas.IntegrationOut])
 def list_integrations(
     workspace_id: int,
@@ -61,7 +100,9 @@ def list_integrations(
     _membership=Depends(require_workspace_permission("integrations.manage")),
 ):
     google = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "google_workspace"})
+    squad = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad"})
     return [
+        _squad_integration_out(workspace_id, squad),
         _google_integration_out(workspace_id, google),
         schemas.IntegrationOut(
             provider="fireflies",
@@ -74,6 +115,59 @@ def list_integrations(
             metadata={"mode": "server_key", "import": "transcript_id"},
         ),
     ]
+
+
+@router.post("/squad", response_model=schemas.IntegrationOut)
+def configure_squad(
+    workspace_id: int,
+    payload: schemas.SquadIntegrationConfigRequest,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    if not squad_configured():
+        raise HTTPException(status_code=400, detail="Squad is not configured on the server")
+    if not db.find_by_id("workspaces", workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    existing = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad"})
+    data = {
+        "workspace_id": workspace_id,
+        "provider": "squad",
+        "status": "connected",
+        "merchant_name": payload.merchant_name,
+        "beneficiary_account": payload.beneficiary_account,
+        "collection_mode": payload.collection_mode,
+        "default_duration_seconds": payload.default_duration_seconds,
+        "connected_at": existing.get("connected_at") if existing else datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    }
+    if existing:
+        existing.update(data)
+        db.save("integrations", existing)
+        integration = existing
+    else:
+        integration = db.insert("integrations", data)
+    return _squad_integration_out(workspace_id, integration)
+
+
+@router.delete("/squad", response_model=schemas.AuthStatusResponse)
+def disconnect_squad(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    db.delete_one("integrations", {"workspace_id": workspace_id, "provider": "squad"})
+    return schemas.AuthStatusResponse(message="Squad disconnected.")
+
+
+@router.get("/virtual-accounts", response_model=list[schemas.VirtualAccountOut])
+def list_virtual_accounts(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("dues.manage")),
+):
+    records = db.find_many("virtual_accounts", {"workspace_id": workspace_id}, sort=[("created_at", DESC)])
+    return [_virtual_account_out(record) for record in records]
 
 
 @router.post("/google/oauth/start", response_model=schemas.GoogleOAuthStartOut)

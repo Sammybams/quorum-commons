@@ -31,7 +31,14 @@ type Contribution = {
   stream_name: string | null;
   amount: number;
   method: string;
+  provider?: string | null;
   gateway_ref: string | null;
+  provider_transaction_ref?: string | null;
+  virtual_account_number?: string | null;
+  account_name?: string | null;
+  bank_name?: string | null;
+  expires_at?: string | null;
+  verification_status?: string | null;
   status: string;
   created_at: string;
 };
@@ -250,6 +257,7 @@ export default function CampaignsClient({
                         <th>Contributor</th>
                         <th>Stream</th>
                         <th>Amount</th>
+                        <th>Collection</th>
                         <th>Status</th>
                         <th>Action</th>
                       </tr>
@@ -264,6 +272,10 @@ export default function CampaignsClient({
                           </td>
                           <td>{contribution.stream_name || "General"}</td>
                           <td>NGN {contribution.amount.toLocaleString()}</td>
+                          <td>
+                            <div>{contribution.provider || contribution.method}</div>
+                            <small>{contribution.virtual_account_number || contribution.gateway_ref || contribution.provider_transaction_ref || "-"}</small>
+                          </td>
                           <td>
                             <span className={`status-pill ${contribution.status === "confirmed" ? "ok" : "pending"}`}>
                               {contribution.status}

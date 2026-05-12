@@ -9,6 +9,11 @@ type Member = {
   level?: string;
   email?: string;
   role: string;
+  trade_category?: string | null;
+  location?: string | null;
+  languages?: string[];
+  availability?: string | null;
+  contribution_capacity?: string | null;
   dues_status?: string;
 };
 

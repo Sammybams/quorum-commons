@@ -59,6 +59,8 @@ class MongoStore:
         "roles": "identity",
         "workspace_members": "identity",
         "integrations": "identity",
+        "community_channels": "identity",
+        "channel_group_links": "identity",
         "auth_sessions": "identity",
         "revoked_tokens": "identity",
         "email_verification_tokens": "identity",
@@ -70,10 +72,15 @@ class MongoStore:
         "campaigns": "finance",
         "funding_streams": "finance",
         "contributions": "finance",
+        "virtual_accounts": "finance",
         "budgets": "finance",
         "budget_lines": "finance",
         "expenditures": "finance",
         "events": "engagement",
+        "channel_messages": "engagement",
+        "message_artifacts": "engagement",
+        "opportunities": "engagement",
+        "opportunity_matches": "engagement",
         "event_attendees": "engagement",
         "meetings": "engagement",
         "meeting_minutes": "engagement",
@@ -93,6 +100,8 @@ class MongoStore:
         "roles",
         "workspace_members",
         "integrations",
+        "community_channels",
+        "channel_group_links",
         "auth_sessions",
         "revoked_tokens",
         "email_verification_tokens",
@@ -103,10 +112,15 @@ class MongoStore:
         "dues_cycles",
         "dues_payments",
         "events",
+        "channel_messages",
+        "message_artifacts",
+        "opportunities",
+        "opportunity_matches",
         "event_attendees",
         "campaigns",
         "funding_streams",
         "contributions",
+        "virtual_accounts",
         "budgets",
         "budget_lines",
         "expenditures",
@@ -145,6 +159,8 @@ class MongoStore:
         self.collection("roles").create_index([("workspace_id", ASCENDING), ("key", ASCENDING)], unique=True)
         self.collection("workspace_members").create_index([("workspace_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
         self.collection("integrations").create_index([("workspace_id", ASCENDING), ("provider", ASCENDING)], unique=True)
+        self.collection("community_channels").create_index([("workspace_id", ASCENDING), ("provider", ASCENDING), ("label", ASCENDING)])
+        self.collection("channel_group_links").create_index([("workspace_id", ASCENDING), ("channel_id", ASCENDING), ("external_group_id", ASCENDING)], unique=True)
         self.collection("auth_sessions").create_index([("refresh_jti", ASCENDING)], unique=True)
         self.collection("revoked_tokens").create_index([("jti", ASCENDING)], unique=True)
         self.collection("email_verification_tokens").create_index([("token", ASCENDING)], unique=True)
@@ -152,11 +168,18 @@ class MongoStore:
         self.collection("invitations").create_index([("token", ASCENDING)], unique=True)
         self.collection("invite_links").create_index([("token", ASCENDING)], unique=True)
         self.collection("events").create_index([("slug", ASCENDING)], unique=True)
+        self.collection("channel_messages").create_index([("workspace_id", ASCENDING), ("channel_id", ASCENDING), ("received_at", DESCENDING)])
+        self.collection("channel_messages").create_index([("workspace_id", ASCENDING), ("external_message_id", ASCENDING)], sparse=True)
+        self.collection("message_artifacts").create_index([("workspace_id", ASCENDING), ("message_id", ASCENDING), ("artifact_type", ASCENDING)])
+        self.collection("opportunities").create_index([("workspace_id", ASCENDING), ("created_at", DESCENDING)])
+        self.collection("opportunity_matches").create_index([("workspace_id", ASCENDING), ("opportunity_id", ASCENDING), ("member_id", ASCENDING)], unique=True, sparse=True)
         self.collection("event_attendees").create_index([("event_id", ASCENDING), ("member_id", ASCENDING)], unique=True, sparse=True)
         self.collection("event_attendees").create_index([("event_id", ASCENDING), ("email", ASCENDING)], unique=True, sparse=True)
         self.collection("campaigns").create_index([("slug", ASCENDING)], unique=True)
         self.collection("contributions").create_index([("gateway_ref", ASCENDING)], unique=True, sparse=True)
         self.collection("dues_payments").create_index([("gateway_ref", ASCENDING)], unique=True, sparse=True)
+        self.collection("virtual_accounts").create_index([("reference", ASCENDING)], unique=True)
+        self.collection("virtual_accounts").create_index([("workspace_id", ASCENDING), ("external_account_number", ASCENDING)], sparse=True)
         self.collection("budgets").create_index([("workspace_id", ASCENDING), ("created_at", DESCENDING)])
         self.collection("budget_lines").create_index([("budget_id", ASCENDING), ("created_at", ASCENDING)])
         self.collection("expenditures").create_index([("budget_line_id", ASCENDING), ("created_at", DESCENDING)])

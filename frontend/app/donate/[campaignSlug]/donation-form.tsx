@@ -15,6 +15,11 @@ type FundingStream = {
 type ContributionResponse = {
   payment_reference: string;
   checkout_url: string | null;
+  provider: string;
+  virtual_account_number?: string | null;
+  account_name?: string | null;
+  bank_name?: string | null;
+  expires_at?: string | null;
   contribution: {
     id: number;
     amount: number;
@@ -78,7 +83,7 @@ export function DonationForm({
       <div>
         <p className="eyebrow">Contribute</p>
         <h2>Support this campaign</h2>
-        <p>Submit your contribution details. The treasurer can confirm it from the campaign ledger.</p>
+        <p>Submit your contribution details and Quorum will generate Squad payment instructions for this campaign.</p>
       </div>
 
       {fundingStreams.length ? (
@@ -140,14 +145,20 @@ export function DonationForm({
             check_circle
           </span>
           <div>
-            <strong>{result.checkout_url ? "Redirecting to Paystack" : "Contribution recorded"}</strong>
+            <strong>{result.checkout_url ? "Opening Squad hosted payment page" : "Contribution recorded"}</strong>
             <p>Reference: {result.payment_reference}</p>
+            {result.virtual_account_number ? (
+              <p>
+                {result.bank_name || "Bank"} · {result.virtual_account_number} · {result.account_name || "Squad virtual account"}
+              </p>
+            ) : null}
+            {result.expires_at ? <p>Expires: {result.expires_at}</p> : null}
           </div>
         </div>
       ) : null}
 
       <button className="btn-primary wide" disabled={loading} type="submit">
-        {loading ? "Preparing..." : "Continue to payment"}
+        {loading ? "Preparing..." : "Generate Squad payment details"}
       </button>
     </form>
   );
