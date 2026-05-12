@@ -1,0 +1,8 @@
+<svg width="280" height="72" viewBox="0 0 280 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="72" height="72" rx="16" fill="#1B5EF7"/>
+  <text x="36" y="47" font-family="Georgia, serif" font-size="36" font-weight="700" fill="white" text-anchor="middle" dominant-baseline="auto">Q</text>
+  <circle cx="50" cy="51" r="4" fill="white" opacity="0.9"/>
+  <circle cx="41" cy="58" r="3.2" fill="white" opacity="0.7"/>
+  <circle cx="53" cy="61" r="2.5" fill="white" opacity="0.55"/>
+  <text x="92" y="47" font-family="Georgia, serif" font-size="34" fill="white" font-weight="400">Quorum</text>
+</svg>
