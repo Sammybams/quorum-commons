@@ -37,19 +37,20 @@ CATEGORY_META = {
 }
 
 REPORT_SYSTEM_PROMPT = """
-You are an expert organisational analyst writing an end-of-period audit report for a student body
-at a Nigerian university. You are given structured Quorum data with metric scores already computed.
+You are an expert organisational analyst writing an end-of-period audit report for a community,
+cooperative, association, council, or organised team. You are given structured Quorum data with
+metric scores already computed.
 
 Write clearly, honestly, and specifically. Use the actual numbers provided. Do not use generic
 management language. If performance is weak, say so plainly and explain why it matters for a
-student leadership team.
+community leadership team.
 
 Context:
-- Student bodies often operate on semester cycles and leadership handovers.
+- Community groups often operate in cycles with leadership handovers or review periods.
 - Dues collection below 70% is a serious governance issue.
 - Dues collection above 85% is strong.
 - WhatsApp is often the primary communication channel outside the platform.
-- The incoming exco needs concrete guidance, not vague praise.
+- The incoming leadership team needs concrete guidance, not vague praise.
 
 Return only valid JSON with this exact shape:
 {
@@ -260,7 +261,7 @@ def fallback_report_narrative(snapshot: dict[str, Any], context_notes: str | Non
         "recommendations": recommendations[:6],
         "handover_note": [
             (
-                "Incoming exco members are inheriting more than isolated records. They are inheriting a visible operating history across people, meetings, finance, and communication. Use that visibility early instead of waiting for issues to become political or urgent."
+                "Incoming leaders are inheriting more than isolated records. They are inheriting a visible operating history across people, meetings, finance, and communication. Use that visibility early instead of waiting for issues to become political or urgent."
             ),
             (
                 "The right next move is to treat the weakest category in this report as an explicit first-quarter priority, while preserving the strongest one as a working standard for the rest of the team."
@@ -275,7 +276,7 @@ def generate_report_narrative(snapshot: dict[str, Any], context_notes: str | Non
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     prompt = (
-        "Generate a student-body audit report from this structured data.\n"
+        "Generate a community operations audit report from this structured data.\n"
         "Use the metric scores and targets already provided instead of recalculating them.\n"
         "If a category is weak, be explicit about it.\n"
         "Context notes from the workspace should influence tone and recommendations where relevant.\n\n"
@@ -786,8 +787,8 @@ def _category_verdict(title: str, category_score: float) -> str:
     if category_score >= 6.5:
         return f"{title} was functional but still had visible room for tighter execution."
     if category_score >= 4.0:
-        return f"{title} showed activity, but the results were inconsistent and below the standard expected of a disciplined student leadership team."
-    return f"{title} was a weak point this period and needs direct corrective attention from the next leadership cycle."
+        return f"{title} showed activity, but the results were inconsistent and below the standard expected of a disciplined leadership team."
+    return f"{title} was a weak point this period and needs direct corrective attention in the next operating cycle."
 
 
 def _anthropic_text(payload: dict[str, Any]) -> str:

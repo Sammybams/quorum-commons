@@ -2,7 +2,7 @@
 
 ## 0:00 - 0:40 Opening
 - Open `/`
-- Say: "Quorum is a student-body operating system for members, meetings, finance, events, and communication."
+- Say: "Quorum is a community operating system for members, meetings, finance, events, and communication."
 - Scroll through `Features`, `Pricing`, and the product preview section.
 
 ## 0:40 - 1:20 Demo Entry
@@ -55,7 +55,7 @@
   - weighted score
   - executive summary
   - category scorecard
-  - recommendations for incoming exco
+  - recommendations for the next leadership team
 - Click `Print / Save PDF`
 - Say: "The same report can be opened in a print-optimised view and exported as a handover or AGM-ready PDF."
 - Say: "Quorum does not just store records. It interprets the leadership cycle and produces a handover-ready audit report."
@@ -68,4 +68,4 @@
 
 ## 6:45 - 7:00 Close
 - Return to `Dashboard`
-- Say: "Quorum gives student leadership teams a structured system for running real operations, not just posting updates."
+- Say: "Quorum gives leadership teams a structured system for running real operations, not just posting updates."

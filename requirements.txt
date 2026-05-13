@@ -1,5 +1,8 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
-pymongo[srv]==3.12
+pymongo==4.8.0
+dnspython==2.6.1
+certifi==2024.8.30
 pydantic==2.11.3
 python-dotenv==1.1.0
+telethon==1.36.0

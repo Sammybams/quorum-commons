@@ -231,6 +231,16 @@ npm install
 npm run dev
 ```
 
+### WhatsApp Gateway
+
+```bash
+cd whatsapp-gateway
+npm install
+npm start
+```
+
+Quorum uses the local Baileys gateway only for WhatsApp session handling. Prepare the WhatsApp channel from `Settings > Integrations`, copy the generated channel ID and gateway secret into `whatsapp-gateway/.env`, then connect the session through the gateway's `/internal/session/connect` endpoint. Full setup notes live in [whatsapp-gateway/README.md](/Users/sam/Documents/quorum-commons/whatsapp-gateway/README.md).
+
 ## Environment Variables
 
 Backend examples are in `.env.example`.
@@ -243,6 +253,8 @@ ANTHROPIC_API_KEY=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 SQUAD_SECRET_KEY=
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
 ```
 
 Frontend examples are in `frontend/.env.example`.

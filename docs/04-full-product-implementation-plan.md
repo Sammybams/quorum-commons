@@ -4,7 +4,7 @@ This plan is derived from `Quorum_Product_Specification.docx` and maps the full 
 
 ## 1. Product Shape
 
-Quorum is a multi-tenant SaaS for student bodies and small admin teams. Each student body is a workspace with isolated data, a public slug, internal admin dashboard, member-facing flows, and public pages for events, donations, links, and the portal.
+Quorum is a multi-tenant SaaS for communities and small admin teams. Each workspace has isolated data, a public slug, an internal admin dashboard, member-facing flows, and public pages for events, donations, links, and the portal.
 
 The platform should support two broad user classes:
 

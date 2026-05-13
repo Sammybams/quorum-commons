@@ -630,7 +630,27 @@ class CommunityChannelOut(BaseModel):
 
 class TelegramChannelConnectRequest(BaseModel):
     label: str = Field(min_length=2, max_length=120)
-    bot_token: str = Field(min_length=20)
+    phone_number: str = Field(min_length=7, max_length=32)
+
+
+class TelegramChannelSessionCompleteRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=16)
+    password: str | None = Field(default=None, min_length=2, max_length=120)
+
+
+class TelegramSetupStatusOut(BaseModel):
+    ready: bool
+    missing_fields: list[str] = Field(default_factory=list)
+    message: str
+    instructions_url: str | None = None
+
+
+class ChannelSyncResultOut(BaseModel):
+    ok: bool = True
+    message: str
+    discovered_groups: int = 0
+    synced_messages: int = 0
+    analyzed_messages: int = 0
 
 
 class WhatsAppChannelConnectRequest(BaseModel):

@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from typing import Any, Iterable
 
+import certifi
 from dotenv import load_dotenv
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 
@@ -137,7 +138,12 @@ class MongoStore:
     ]
 
     def __init__(self):
-        self.client = MongoClient(MONGODB_CONNECTION_STRING)
+        client_options: dict[str, Any] = {
+            "tlsCAFile": certifi.where(),
+            "retryWrites": True,
+            "appname": "Quorum",
+        }
+        self.client = MongoClient(MONGODB_CONNECTION_STRING, **client_options)
         self.database_prefix = MONGODB_DATABASE_PREFIX
         self.ensure_indexes()
 

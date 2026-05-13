@@ -156,7 +156,7 @@ export default function HomePage() {
           </h1>
           <p>
             Run members, meetings, collections, budgets, campaigns, links, and announcements from one structured
-            workspace designed for cooperatives, student bodies, trade groups, and community teams.
+            workspace designed for cooperatives, campus organizations, trade groups, and community teams.
           </p>
           <div className="stitch-hero-ctas">
             <Link href="/register" className="stitch-hero-primary">

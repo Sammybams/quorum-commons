@@ -25,6 +25,7 @@ node_modules/
 out/
 dist/
 build/
+whatsapp-gateway/.auth/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

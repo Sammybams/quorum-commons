@@ -52,7 +52,7 @@ def generate_meeting_minutes(*, transcript: str, meeting_title: str, agenda: lis
     roster_block = json.dumps(member_roster, ensure_ascii=True)
     agenda_block = json.dumps(agenda, ensure_ascii=True)
     prompt = (
-        "You are drafting formal student-body meeting minutes.\n"
+        "You are drafting formal community meeting minutes.\n"
         "Return only valid JSON with this exact shape:\n"
         "{"
         '"summary": string, '

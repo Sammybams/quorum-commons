@@ -40,6 +40,16 @@ type ChannelGroup = {
   message_count: number;
   created_at: string;
 };
+type TelegramSetupStatus = {
+  ready: boolean;
+  missing_fields: string[];
+  message: string;
+  instructions_url?: string | null;
+};
+
+function formatChannelStatus(status: string) {
+  return status.replaceAll("_", " ");
+}
 
 function IntegrationsPageContent({ params }: { params: { workspaceSlug: string } }) {
   const searchParams = useSearchParams();
@@ -55,11 +65,16 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [savingSquad, setSavingSquad] = useState(false);
   const [savingTelegram, setSavingTelegram] = useState(false);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
+  const [telegramActionChannelId, setTelegramActionChannelId] = useState<number | null>(null);
+  const [telegramSetup, setTelegramSetup] = useState<TelegramSetupStatus | null>(null);
   const [merchantName, setMerchantName] = useState("");
   const [beneficiaryAccount, setBeneficiaryAccount] = useState("");
   const [durationSeconds, setDurationSeconds] = useState("3600");
   const [telegramLabel, setTelegramLabel] = useState("Community Telegram");
-  const [telegramToken, setTelegramToken] = useState("");
+  const [telegramPhoneNumber, setTelegramPhoneNumber] = useState("");
+  const [telegramCodes, setTelegramCodes] = useState<Record<number, string>>({});
+  const [telegramPasswords, setTelegramPasswords] = useState<Record<number, string>>({});
+  const [groupFilters, setGroupFilters] = useState<Record<number, string>>({});
   const [whatsAppLabel, setWhatsAppLabel] = useState("Community WhatsApp");
   const [whatsAppGatewayAccountId, setWhatsAppGatewayAccountId] = useState("");
 
@@ -68,9 +83,10 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
       try {
         const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
         setWorkspace(found);
-        const [integrations, loadedChannels] = await Promise.all([
+        const [integrations, loadedChannels, telegramSetupStatus] = await Promise.all([
           apiGet<Integration[]>(`/workspaces/${found.id}/integrations`),
           apiGet<CommunityChannel[]>(`/workspaces/${found.id}/community-channels`),
+          apiGet<TelegramSetupStatus>(`/workspaces/${found.id}/community-channels/telegram/setup-status`),
         ]);
         const google = integrations.find((item) => item.provider === "google_workspace") || null;
         const squad = integrations.find((item) => item.provider === "squad") || null;
@@ -78,6 +94,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         setSquadIntegration(squad);
         setFireflies(integrations.find((item) => item.provider === "fireflies") || null);
         setChannels(loadedChannels);
+        setTelegramSetup(telegramSetupStatus);
         setMerchantName(squad?.metadata?.merchant_name || "");
         setBeneficiaryAccount(squad?.metadata?.beneficiary_account || "");
         setDurationSeconds(squad?.metadata?.default_duration_seconds || "3600");
@@ -102,6 +119,8 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     () => googleIntegration?.status === "connected" && googleIntegration?.metadata?.gmail !== "available",
     [googleIntegration],
   );
+  const telegramChannels = useMemo(() => channels.filter((channel) => channel.provider === "telegram"), [channels]);
+  const whatsAppChannels = useMemo(() => channels.filter((channel) => channel.provider === "whatsapp"), [channels]);
 
   async function reloadChannels(currentWorkspace = workspace) {
     if (!currentWorkspace) {
@@ -215,16 +234,99 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     setSavingTelegram(true);
     setError(null);
     try {
-      await apiPost<CommunityChannel, { label: string; bot_token: string }>(
+      await apiPost<CommunityChannel, { label: string; phone_number: string }>(
         `/workspaces/${workspace.id}/community-channels/telegram`,
-        { label: telegramLabel.trim(), bot_token: telegramToken.trim() },
+        {
+          label: telegramLabel.trim(),
+          phone_number: telegramPhoneNumber.trim(),
+        },
       );
-      setTelegramToken("");
       await reloadChannels(workspace);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to configure Telegram.");
     } finally {
       setSavingTelegram(false);
+    }
+  }
+
+  async function startTelegramLogin(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setTelegramActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/telegram/session/start`,
+        {},
+      );
+      await reloadChannels(workspace);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start Telegram login.");
+    } finally {
+      setTelegramActionChannelId(null);
+    }
+  }
+
+  async function completeTelegramLogin(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setTelegramActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<CommunityChannel, { code: string; password?: string }>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/telegram/session/complete`,
+        {
+          code: (telegramCodes[channelId] || "").trim(),
+          password: (telegramPasswords[channelId] || "").trim() || undefined,
+        },
+      );
+      setTelegramCodes((current) => ({ ...current, [channelId]: "" }));
+      setTelegramPasswords((current) => ({ ...current, [channelId]: "" }));
+      await reloadChannels(workspace);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to complete Telegram login.");
+    } finally {
+      setTelegramActionChannelId(null);
+    }
+  }
+
+  async function discoverTelegramGroups(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setTelegramActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/telegram/discover-groups`,
+        {},
+      );
+      await reloadChannels(workspace);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to refresh Telegram groups.");
+    } finally {
+      setTelegramActionChannelId(null);
+    }
+  }
+
+  async function syncTelegramChannel(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setTelegramActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/telegram/sync`,
+        {},
+      );
+      await reloadChannels(workspace);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to sync Telegram messages.");
+    } finally {
+      setTelegramActionChannelId(null);
     }
   }
 
@@ -283,8 +385,195 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     }
   }
 
+  function renderChannelCard(channel: CommunityChannel) {
+    const groups = groupsByChannel[channel.id] || [];
+    const selectedGroups = groups.filter((group) => group.sync_enabled);
+    const discoverableGroups = groups.filter((group) => !group.sync_enabled);
+    const groupFilter = (groupFilters[channel.id] || "").trim().toLowerCase();
+    const filteredDiscoverableGroups = discoverableGroups.filter((group) =>
+      group.group_name.toLowerCase().includes(groupFilter),
+    );
+    const statusTone = channel.status === "connected" ? "ok" : channel.status === "error" ? "danger" : "pending";
+
+    return (
+      <article className="panel-card integration-channel-card" key={channel.id}>
+        <div className="card-head">
+          <div>
+            <p className="eyebrow">{channel.provider === "telegram" ? "Telegram" : "WhatsApp"}</p>
+            <h2>{channel.label}</h2>
+          </div>
+          <span className={`status-pill ${statusTone}`}>{formatChannelStatus(channel.status)}</span>
+        </div>
+        <div className="integration-summary-grid">
+          {channel.provider === "telegram" ? (
+            <div className="integration-summary-item">
+              <span>Account</span>
+              <strong>{String(channel.metadata.telegram_username || channel.metadata.display_name || channel.metadata.phone_number || "Not connected")}</strong>
+            </div>
+          ) : (
+            <div className="integration-summary-item">
+              <span>Channel id</span>
+              <strong>{String(channel.id)}</strong>
+            </div>
+          )}
+          {channel.provider === "whatsapp" ? (
+            <div className="integration-summary-item">
+              <span>Shared secret</span>
+              <strong>{String(channel.metadata.webhook_secret || "-")}</strong>
+            </div>
+          ) : null}
+          <div className="integration-summary-item">
+            <span>Groups discovered</span>
+            <strong>{String(channel.metadata.discovered_group_count || 0)}</strong>
+          </div>
+          <div className="integration-summary-item">
+            <span>Groups syncing</span>
+            <strong>{String(channel.metadata.selected_group_count || 0)}</strong>
+          </div>
+        </div>
+        {channel.metadata.last_error ? <p className="form-error">{String(channel.metadata.last_error)}</p> : null}
+        {channel.provider === "telegram" ? (
+          <div className="integration-inline-auth">
+            <label>
+              Telegram code
+              <input
+                value={telegramCodes[channel.id] || ""}
+                onChange={(event) => setTelegramCodes((current) => ({ ...current, [channel.id]: event.target.value }))}
+                placeholder="Code from Telegram"
+              />
+            </label>
+            <label>
+              Two-step password
+              <input
+                value={telegramPasswords[channel.id] || ""}
+                onChange={(event) => setTelegramPasswords((current) => ({ ...current, [channel.id]: event.target.value }))}
+                placeholder="Optional unless Telegram asks for it"
+              />
+            </label>
+          </div>
+        ) : null}
+        {channel.provider === "whatsapp" ? (
+          <p className="muted-copy integration-inline-note">
+            Run the local gateway with this channel ID and secret, then pair the WhatsApp account before enabling group sync.
+          </p>
+        ) : null}
+        <div className="integration-toolbar">
+          {channel.provider === "telegram" ? (
+            <>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => startTelegramLogin(channel.id)}
+                disabled={telegramActionChannelId === channel.id}
+              >
+                {telegramActionChannelId === channel.id ? "Working..." : "Send login code"}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => completeTelegramLogin(channel.id)}
+                disabled={telegramActionChannelId === channel.id || !(telegramCodes[channel.id] || "").trim()}
+              >
+                Complete login
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => discoverTelegramGroups(channel.id)}
+                disabled={telegramActionChannelId === channel.id || channel.status !== "connected"}
+              >
+                Refresh groups
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => syncTelegramChannel(channel.id)}
+                disabled={telegramActionChannelId === channel.id || channel.status !== "connected"}
+              >
+                Sync enabled groups
+              </button>
+            </>
+          ) : null}
+          <button type="button" className="btn-secondary" onClick={() => disconnectChannel(channel.id)}>
+            Disconnect channel
+          </button>
+        </div>
+        {groups.length === 0 ? (
+          <div className="integration-empty-state">
+            {channel.provider === "telegram"
+              ? "No groups discovered yet. Complete login, then refresh groups."
+              : "No groups discovered yet. Add the connected account to the target groups first."}
+          </div>
+        ) : (
+          <div className="group-picker-layout">
+            <div className="group-picker-selected">
+              <div className="group-picker-head">
+                <strong>Selected groups</strong>
+                <span>{selectedGroups.length}</span>
+              </div>
+              {selectedGroups.length ? (
+                <div className="group-chip-list">
+                  {selectedGroups.map((group) => (
+                    <button
+                      key={group.id}
+                      type="button"
+                      className="group-chip"
+                      onClick={() => toggleGroupSync(channel.id, group.id, false)}
+                    >
+                      <span>{group.group_name}</span>
+                      <small>{group.message_count} synced</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted-copy">No groups enabled yet.</p>
+              )}
+            </div>
+
+            <details className="group-picker">
+              <summary>
+                <span>Choose groups to sync</span>
+                <small>{discoverableGroups.length} available</small>
+              </summary>
+              <div className="group-picker-panel">
+                <label className="group-search">
+                  <span>Find a group</span>
+                  <input
+                    value={groupFilters[channel.id] || ""}
+                    onChange={(event) => setGroupFilters((current) => ({ ...current, [channel.id]: event.target.value }))}
+                    placeholder="Search discovered groups"
+                  />
+                </label>
+                <div className="group-picker-list">
+                  {filteredDiscoverableGroups.length ? (
+                    filteredDiscoverableGroups.map((group) => (
+                      <button
+                        key={group.id}
+                        type="button"
+                        className="group-picker-row"
+                        onClick={() => toggleGroupSync(channel.id, group.id, true)}
+                      >
+                        <div>
+                          <strong>{group.group_name}</strong>
+                          <span>{group.message_count} synced messages</span>
+                        </div>
+                        <small>Add</small>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted-copy">No groups match this search.</p>
+                  )}
+                </div>
+              </div>
+            </details>
+          </div>
+        )}
+      </article>
+    );
+  }
+
   return (
-    <section className="page-stack">
+    <section className="page-stack integrations-page">
       <header className="page-head row">
         <div>
           <p className="eyebrow">Settings</p>
@@ -297,11 +586,12 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
       </header>
 
       {searchParams.get("status") === "connected" ? <p className="status-note">Google Workspace connected.</p> : null}
-      <p className="status-note">For privacy, Quorum only stores and processes messages from groups you explicitly enable below. Unselected groups are discovered for approval and then ignored.</p>
+      <p className="status-note">Quorum only syncs groups you explicitly enable. Everything else stays discovered but ignored.</p>
       {error ? <p className="form-error">{error}</p> : null}
 
-      <section className="content-grid">
-        <article className="panel-card">
+      <section className="integrations-columns">
+        <div className="side-stack">
+        <article className="panel-card integrations-setup-card">
           <div className="card-head">
             <div>
               <p className="eyebrow">Squad</p>
@@ -357,41 +647,18 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
           {!squadIntegration?.configured ? <p className="muted-copy">Set `SQUAD_SECRET_KEY` on the backend before connecting Squad.</p> : null}
         </article>
 
-        <article className="panel-card">
-          <div className="card-head">
-            <div>
-              <p className="eyebrow">Telegram</p>
-              <h2>Selected-group sync</h2>
-            </div>
-            <span className="status-pill ok">{channels.filter((channel) => channel.provider === "telegram").length} connected</span>
-          </div>
-          <p>Connect a Telegram bot, add it to your community groups, and then enable only the groups Quorum should sync.</p>
-          <div className="form-stack">
-            <label>
-              Channel label
-              <input value={telegramLabel} onChange={(event) => setTelegramLabel(event.target.value)} />
-            </label>
-            <label>
-              Bot token
-              <input value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder="123456:ABC..." />
-            </label>
-          </div>
-          <div className="page-actions">
-            <button type="button" className="btn-primary" onClick={connectTelegram} disabled={savingTelegram || !telegramToken.trim()}>
-              {savingTelegram ? "Connecting..." : "Connect Telegram"}
-            </button>
-          </div>
-        </article>
-
-        <article className="panel-card">
+        <article className="panel-card integrations-setup-card">
           <div className="card-head">
             <div>
               <p className="eyebrow">WhatsApp</p>
-              <h2>Gateway-selected groups</h2>
+              <h2>{whatsAppChannels.length ? "Add another WhatsApp source" : "Gateway-selected groups"}</h2>
             </div>
-            <span className="status-pill pending">{channels.filter((channel) => channel.provider === "whatsapp").length} prepared</span>
+            <span className="status-pill pending">{whatsAppChannels.length} prepared</span>
           </div>
-          <p>Prepare a WhatsApp sync target here, then point the Baileys gateway at the generated inbound URL and secret. Quorum will only persist messages from groups you enable.</p>
+          <p>Prepare a WhatsApp sync target here, then point the Baileys gateway at the generated inbound URL and secret.</p>
+          <div className="status-note">
+            Prepare the channel, connect the gateway, then enable only the approved groups below.
+          </div>
           <div className="form-stack">
             <label>
               Channel label
@@ -409,75 +676,9 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
           </div>
         </article>
 
-        {channels.map((channel) => {
-          const groups = groupsByChannel[channel.id] || [];
-          return (
-            <article className="panel-card" key={channel.id}>
-              <div className="card-head">
-                <div>
-                  <p className="eyebrow">{channel.provider === "telegram" ? "Telegram" : "WhatsApp"}</p>
-                  <h2>{channel.label}</h2>
-                </div>
-                <span className={`status-pill ${channel.status === "connected" ? "ok" : "pending"}`}>{channel.status}</span>
-              </div>
-              <div className="mini-list">
-                <div>
-                  <span>Inbound URL</span>
-                  <strong>{String(channel.metadata.webhook_url || "-")}</strong>
-                </div>
-                {channel.provider === "telegram" ? (
-                  <div>
-                    <span>Bot</span>
-                    <strong>{String(channel.metadata.bot_username || channel.metadata.display_name || "Unknown bot")}</strong>
-                  </div>
-                ) : (
-                  <div>
-                    <span>Gateway secret</span>
-                    <strong>{String(channel.metadata.webhook_secret || "-")}</strong>
-                  </div>
-                )}
-                <div>
-                  <span>Groups discovered</span>
-                  <strong>{String(channel.metadata.discovered_group_count || 0)}</strong>
-                </div>
-                <div>
-                  <span>Groups syncing</span>
-                  <strong>{String(channel.metadata.selected_group_count || 0)}</strong>
-                </div>
-              </div>
-              {channel.metadata.last_error ? <p className="form-error">{String(channel.metadata.last_error)}</p> : null}
-              <div className="page-actions">
-                <button type="button" className="btn-secondary" onClick={() => disconnectChannel(channel.id)}>
-                  Disconnect channel
-                </button>
-              </div>
-              <div className="mini-list roomy">
-                {groups.length === 0 ? (
-                  <div>
-                    <span>Groups</span>
-                    <strong>No groups discovered yet. Add the bot or gateway account to the group first.</strong>
-                  </div>
-                ) : (
-                  groups.map((group) => (
-                    <div key={group.id}>
-                      <span>{group.group_name}</span>
-                      <strong>{group.message_count} synced messages</strong>
-                      <button
-                        type="button"
-                        className={group.sync_enabled ? "btn-primary" : "btn-secondary"}
-                        onClick={() => toggleGroupSync(channel.id, group.id, !group.sync_enabled)}
-                      >
-                        {group.sync_enabled ? "Sync enabled" : "Enable sync"}
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </article>
-          );
-        })}
+        {whatsAppChannels.map(renderChannelCard)}
 
-        <article className="panel-card">
+        <article className="panel-card integrations-setup-card">
           <div className="card-head">
             <div>
               <p className="eyebrow">Google Workspace</p>
@@ -529,8 +730,51 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
           </div>
           {!googleIntegration?.configured ? <p className="muted-copy">Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the backend before connecting.</p> : null}
         </article>
+        </div>
 
-        <article className="panel-card">
+        <div className="side-stack">
+        <article className="panel-card integrations-setup-card">
+          <div className="card-head">
+            <div>
+              <p className="eyebrow">Telegram</p>
+              <h2>{telegramChannels.length ? "Add another Telegram account" : "Selected-group sync"}</h2>
+            </div>
+            <span className="status-pill ok">{telegramChannels.length} connected</span>
+          </div>
+          <p>{telegramChannels.length ? "Add a separate Telegram account if this workspace needs another source of group messages." : "Connect a Telegram account, discover its groups, then choose only the ones Quorum should sync."}</p>
+          {telegramSetup && telegramSetup.ready === false ? <div className="status-note">{telegramSetup.message}</div> : null}
+          <div className="form-stack">
+            <label>
+              Channel label
+              <input value={telegramLabel} onChange={(event) => setTelegramLabel(event.target.value)} />
+            </label>
+            <label>
+              Phone number
+              <input value={telegramPhoneNumber} onChange={(event) => setTelegramPhoneNumber(event.target.value)} placeholder="+2348012345678" />
+            </label>
+          </div>
+          <div className="page-actions">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={connectTelegram}
+              disabled={savingTelegram || telegramSetup?.ready === false || !telegramPhoneNumber.trim()}
+            >
+              {savingTelegram ? "Saving..." : "Save Telegram account"}
+            </button>
+          </div>
+          {telegramSetup?.ready === false ? (
+            <p className="muted-copy">
+              Backend owner action needed: add {telegramSetup.missing_fields.join(", ")} to the backend environment, then reload this page.
+            </p>
+          ) : (
+            <p className="muted-copy">After saving the phone number, use the channel card below to send the login code and complete the Telegram session.</p>
+          )}
+        </article>
+
+        {telegramChannels.map(renderChannelCard)}
+
+        <article className="panel-card integrations-setup-card">
           <div className="card-head">
             <div>
               <p className="eyebrow">Fireflies</p>
@@ -552,6 +796,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
             </div>
           </div>
         </article>
+        </div>
       </section>
     </section>
   );

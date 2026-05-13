@@ -31,7 +31,7 @@ Return current user profile and workspace memberships.
 
 ## `POST /workspaces`
 
-Create workspace (student body).
+Create workspace (community or organization).
 
 ## `GET /workspaces/{workspace_id}`
 

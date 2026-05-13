@@ -94,7 +94,7 @@ That means:
 
 ## 4. How Workspace Association Works
 
-The integration spec asks how Quorum knows the Google connection belongs to a given student body.
+The integration spec asks how Quorum knows the Google connection belongs to a given workspace.
 
 That mapping is now:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 from datetime import datetime
 
@@ -9,17 +10,44 @@ from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import require_workspace_permission
 from ..services.community_intelligence import CommunityIntelligenceError, analyze_message
-from ..services.telegram import TelegramServiceError, telegram_get_me, telegram_set_webhook
+from ..services.telegram import (
+    TelegramServiceError,
+    telegram_list_groups,
+    telegram_session_complete,
+    telegram_session_start,
+    telegram_sync_group_messages,
+)
 
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/community-channels", tags=["community-channels"])
 inbound_router = APIRouter(prefix="/community-channels", tags=["community-channels"])
 
 
+def _telegram_backend_missing_fields() -> list[str]:
+    missing: list[str] = []
+    if not os.getenv("TELEGRAM_API_ID"):
+        missing.append("TELEGRAM_API_ID")
+    if not os.getenv("TELEGRAM_API_HASH"):
+        missing.append("TELEGRAM_API_HASH")
+    return missing
+
+
+def _telegram_backend_credentials() -> tuple[int, str]:
+    missing = _telegram_backend_missing_fields()
+    if missing:
+        raise TelegramServiceError(
+            "Telegram sign-in is blocked until the backend owner configures: " + ", ".join(missing)
+        )
+    return int(os.getenv("TELEGRAM_API_ID") or "0"), str(os.getenv("TELEGRAM_API_HASH") or "")
+
+
 def _channel_out(channel) -> schemas.CommunityChannelOut:
     metadata = {
         "webhook_url": channel.get("webhook_url"),
-        "bot_username": channel.get("bot_username"),
+        "telegram_username": channel.get("telegram_username"),
+        "telegram_user_id": channel.get("telegram_user_id"),
+        "phone_number": channel.get("phone_number"),
+        "group_type": channel.get("group_type"),
         "display_name": channel.get("display_name"),
         "gateway_account_id": channel.get("gateway_account_id"),
         "selected_group_count": channel.get("selected_group_count", 0),
@@ -242,6 +270,31 @@ def _refresh_channel_counts(db: MongoStore, channel):
     db.save("community_channels", channel)
 
 
+async def _discover_telegram_groups(db: MongoStore, channel) -> int:
+    api_id, api_hash = _telegram_backend_credentials()
+    groups = await telegram_list_groups(
+        api_id=api_id,
+        api_hash=api_hash,
+        session_string=str(channel.get("telegram_session_string") or ""),
+    )
+    for group in groups:
+        seen_at = datetime.utcnow()
+        link = _discover_or_update_group(
+            db,
+            workspace_id=channel.workspace_id,
+            channel_id=channel.id,
+            provider="telegram",
+            external_group_id=group.external_group_id,
+            group_name=group.group_name,
+            seen_at=seen_at,
+        )
+        link["username"] = group.username
+        link["group_type"] = group.group_type
+        db.save("channel_group_links", link)
+    _refresh_channel_counts(db, channel)
+    return len(groups)
+
+
 @router.get("", response_model=list[schemas.CommunityChannelOut])
 def list_community_channels(
     workspace_id: int,
@@ -255,58 +308,67 @@ def list_community_channels(
     return [_channel_out(channel) for channel in refreshed]
 
 
-@router.post("/telegram", response_model=schemas.CommunityChannelOut, status_code=201)
-def connect_telegram_channel(
+@router.get("/telegram/setup-status", response_model=schemas.TelegramSetupStatusOut)
+def telegram_setup_status(
     workspace_id: int,
-    payload: schemas.TelegramChannelConnectRequest,
-    request: Request,
     db: MongoStore = Depends(get_db),
     _membership=Depends(require_workspace_permission("integrations.manage")),
 ):
     if not db.find_by_id("workspaces", workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    missing = _telegram_backend_missing_fields()
+    ready = not missing
+    return schemas.TelegramSetupStatusOut(
+        ready=ready,
+        missing_fields=missing,
+        message=(
+            "Telegram account sign-in is ready. Users only need their phone number, login code, and optional 2FA password."
+            if ready
+            else "Telegram account sign-in is blocked until the backend owner configures the Telegram app credentials."
+        ),
+        instructions_url="https://my.telegram.org/apps" if missing else None,
+    )
+
+
+@router.post("/telegram", response_model=schemas.CommunityChannelOut, status_code=201)
+def connect_telegram_channel(
+    workspace_id: int,
+    payload: schemas.TelegramChannelConnectRequest,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    if not db.find_by_id("workspaces", workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    try:
+        _telegram_backend_credentials()
+    except TelegramServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     existing = db.find_one(
         "community_channels",
         {"workspace_id": workspace_id, "provider": "telegram", "label": payload.label.strip()},
     )
     channel_id = existing.id if existing else db.next_id("community_channels")
-    secret = existing.get("webhook_secret") if existing else secrets.token_urlsafe(24)
-    webhook_url = str(request.url_for("telegram_channel_webhook", channel_id=channel_id))
-    bot_username = None
-    display_name = None
-    status = "configured"
-    last_error = None
-    try:
-        profile = telegram_get_me(payload.bot_token).get("result") or {}
-        bot_username = profile.get("username")
-        display_name = profile.get("first_name")
-        telegram_set_webhook(
-            payload.bot_token,
-            webhook_url=webhook_url,
-            secret_token=secret,
-            allowed_updates=["message"],
-        )
-        status = "connected"
-    except TelegramServiceError as exc:
-        last_error = str(exc)
-
     record = {
         "id": channel_id,
         "workspace_id": workspace_id,
         "provider": "telegram",
         "label": payload.label.strip(),
-        "status": status,
-        "bot_token": payload.bot_token,
-        "bot_username": bot_username,
-        "display_name": display_name,
-        "webhook_url": webhook_url,
-        "webhook_secret": secret,
-        "connected_at": existing.get("connected_at") if existing else datetime.utcnow(),
+        "status": "configured",
+        "phone_number": payload.phone_number,
+        "temp_session": None,
+        "phone_code_hash": None,
+        "telegram_session_string": existing.get("telegram_session_string") if existing else None,
+        "telegram_user_id": existing.get("telegram_user_id") if existing else None,
+        "telegram_username": existing.get("telegram_username") if existing else None,
+        "display_name": existing.get("display_name") if existing else None,
+        "webhook_url": None,
+        "webhook_secret": existing.get("webhook_secret") if existing else secrets.token_urlsafe(24),
+        "connected_at": existing.get("connected_at") if existing else None,
         "updated_at": datetime.utcnow(),
         "selected_group_count": existing.get("selected_group_count", 0) if existing else 0,
         "discovered_group_count": existing.get("discovered_group_count", 0) if existing else 0,
-        "last_error": last_error,
+        "last_error": None,
     }
     if existing:
         existing.update(record)
@@ -314,6 +376,215 @@ def connect_telegram_channel(
     else:
         channel = db.insert("community_channels", record)
     return _channel_out(channel)
+
+
+@router.post("/{channel_id}/telegram/session/start", response_model=schemas.AuthStatusResponse)
+async def start_telegram_channel_session(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "telegram"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Telegram channel not found")
+    try:
+        api_id, api_hash = _telegram_backend_credentials()
+    except TelegramServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        result = await telegram_session_start(
+            api_id=api_id,
+            api_hash=api_hash,
+            phone_number=str(channel.get("phone_number") or ""),
+        )
+    except TelegramServiceError as exc:
+        channel["status"] = "error"
+        channel["last_error"] = str(exc)
+        db.save("community_channels", channel)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    channel["temp_session"] = result.temp_session
+    channel["phone_code_hash"] = result.phone_code_hash
+    channel["status"] = "code_sent"
+    channel["last_error"] = None
+    channel["updated_at"] = datetime.utcnow()
+    db.save("community_channels", channel)
+    return schemas.AuthStatusResponse(message="Telegram login code sent. Complete the session with the code from Telegram.")
+
+
+@router.post("/{channel_id}/telegram/session/complete", response_model=schemas.CommunityChannelOut)
+async def complete_telegram_channel_session(
+    workspace_id: int,
+    channel_id: int,
+    payload: schemas.TelegramChannelSessionCompleteRequest,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "telegram"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Telegram channel not found")
+    try:
+        api_id, api_hash = _telegram_backend_credentials()
+    except TelegramServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    temp_session = str(channel.get("temp_session") or "")
+    phone_code_hash = str(channel.get("phone_code_hash") or "")
+    if not temp_session or not phone_code_hash:
+        raise HTTPException(status_code=400, detail="Start Telegram login first before completing the session.")
+    try:
+        result = await telegram_session_complete(
+            api_id=api_id,
+            api_hash=api_hash,
+            temp_session=temp_session,
+            phone_number=str(channel.get("phone_number") or ""),
+            code=payload.code,
+            phone_code_hash=phone_code_hash,
+            password=payload.password,
+        )
+    except TelegramServiceError as exc:
+        channel["status"] = "error"
+        channel["last_error"] = str(exc)
+        channel["updated_at"] = datetime.utcnow()
+        db.save("community_channels", channel)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    channel["telegram_session_string"] = result.session_string
+    channel["telegram_user_id"] = result.user_id
+    channel["telegram_username"] = result.username
+    channel["display_name"] = result.display_name
+    channel["temp_session"] = None
+    channel["phone_code_hash"] = None
+    channel["status"] = "connected"
+    channel["connected_at"] = datetime.utcnow()
+    channel["updated_at"] = datetime.utcnow()
+    channel["last_error"] = None
+    db.save("community_channels", channel)
+    try:
+        discovered_groups = await _discover_telegram_groups(db, channel)
+    except TelegramServiceError as exc:
+        channel["status"] = "connected"
+        channel["last_error"] = str(exc)
+        channel["updated_at"] = datetime.utcnow()
+        db.save("community_channels", channel)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    channel["discovered_group_count"] = discovered_groups
+    db.save("community_channels", channel)
+    return _channel_out(channel)
+
+
+@router.post("/{channel_id}/telegram/discover-groups", response_model=schemas.ChannelSyncResultOut)
+async def discover_telegram_groups(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "telegram"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Telegram channel not found")
+    if not channel.get("telegram_session_string"):
+        raise HTTPException(status_code=400, detail="Connect the Telegram account before discovering groups.")
+    try:
+        _telegram_backend_credentials()
+    except TelegramServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        discovered = await _discover_telegram_groups(db, channel)
+    except TelegramServiceError as exc:
+        channel["last_error"] = str(exc)
+        channel["updated_at"] = datetime.utcnow()
+        db.save("community_channels", channel)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    channel["status"] = "connected"
+    channel["last_error"] = None
+    db.save("community_channels", channel)
+    return schemas.ChannelSyncResultOut(message="Telegram groups refreshed.", discovered_groups=discovered)
+
+
+@router.post("/{channel_id}/telegram/sync", response_model=schemas.ChannelSyncResultOut)
+async def sync_telegram_channel(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "telegram"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Telegram channel not found")
+    if not channel.get("telegram_session_string"):
+        raise HTTPException(status_code=400, detail="Connect the Telegram account before syncing messages.")
+    try:
+        api_id, api_hash = _telegram_backend_credentials()
+    except TelegramServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    groups = db.find_many(
+        "channel_group_links",
+        {"workspace_id": workspace_id, "channel_id": channel_id, "sync_enabled": True},
+        sort=[("created_at", DESC)],
+    )
+    if not groups:
+        return schemas.ChannelSyncResultOut(message="No Telegram groups have sync enabled yet.")
+
+    last_synced_message_ids = {
+        str(group.external_group_id): int(group.get("last_synced_message_id") or 0)
+        for group in groups
+    }
+    try:
+        messages = await telegram_sync_group_messages(
+            api_id=api_id,
+            api_hash=api_hash,
+            session_string=str(channel.get("telegram_session_string") or ""),
+            external_group_ids=[str(group.external_group_id) for group in groups],
+            last_synced_message_ids=last_synced_message_ids,
+        )
+    except TelegramServiceError as exc:
+        channel["last_error"] = str(exc)
+        channel["updated_at"] = datetime.utcnow()
+        db.save("community_channels", channel)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    group_by_external_id = {str(group.external_group_id): group for group in groups}
+    stored_count = 0
+    artifact_count = 0
+    for item in messages:
+        group = group_by_external_id.get(item.external_group_id)
+        if not group:
+            continue
+        stored_message = _persist_channel_message(
+            db,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+            group_link=group,
+            provider="telegram",
+            external_message_id=item.external_message_id,
+            sender_name=item.sender_name,
+            sender_handle=item.sender_handle,
+            message_type=item.message_type,
+            text=item.text,
+            raw_payload=item.raw_payload,
+            received_at=item.received_at,
+        )
+        if not stored_message:
+            continue
+        stored_count += 1
+        group["last_synced_message_id"] = int(item.external_message_id)
+        group["last_synced_at"] = datetime.utcnow()
+        db.save("channel_group_links", group)
+        _analyze_and_store_artifact(db, message=stored_message, group_name=group.group_name)
+        artifact_count += 1
+
+    channel["status"] = "connected"
+    channel["last_error"] = None
+    channel["updated_at"] = datetime.utcnow()
+    db.save("community_channels", channel)
+    return schemas.ChannelSyncResultOut(
+        message="Telegram sync complete.",
+        discovered_groups=int(channel.get("discovered_group_count") or 0),
+        synced_messages=stored_count,
+        analyzed_messages=artifact_count,
+    )
 
 
 @router.post("/whatsapp", response_model=schemas.CommunityChannelOut, status_code=201)
@@ -494,7 +765,6 @@ def analyze_channel_message(
 @inbound_router.post("/telegram/{channel_id}/webhook", name="telegram_channel_webhook")
 async def telegram_channel_webhook(
     channel_id: int,
-    request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
     db: MongoStore = Depends(get_db),
 ):
@@ -503,49 +773,11 @@ async def telegram_channel_webhook(
         raise HTTPException(status_code=404, detail="Channel not found")
     if channel.get("webhook_secret") and channel.get("webhook_secret") != x_telegram_bot_api_secret_token:
         raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
-
-    payload = await request.json()
-    message = payload.get("message") or {}
-    chat = message.get("chat") or {}
-    if chat.get("type") not in {"group", "supergroup"}:
-        return {"ok": True, "status": "ignored_non_group"}
-
-    text = (message.get("text") or message.get("caption") or "").strip()
-    if not text:
-        return {"ok": True, "status": "ignored_empty"}
-
-    received_at = datetime.utcfromtimestamp(int(message.get("date") or datetime.utcnow().timestamp()))
-    group = _discover_or_update_group(
-        db,
-        workspace_id=channel.workspace_id,
-        channel_id=channel.id,
-        provider="telegram",
-        external_group_id=str(chat.get("id")),
-        group_name=str(chat.get("title") or chat.get("username") or chat.get("id")),
-        seen_at=received_at,
-    )
-    _refresh_channel_counts(db, channel)
-    if not group.get("sync_enabled"):
-        return {"ok": True, "status": "ignored_unselected_group"}
-
-    sender = message.get("from") or {}
-    stored_message = _persist_channel_message(
-        db,
-        workspace_id=channel.workspace_id,
-        channel_id=channel.id,
-        group_link=group,
-        provider="telegram",
-        external_message_id=str(message.get("message_id")) if message.get("message_id") is not None else None,
-        sender_name=sender.get("first_name") or sender.get("username"),
-        sender_handle=sender.get("username"),
-        message_type="text" if message.get("text") else "caption",
-        text=text,
-        raw_payload=payload,
-        received_at=received_at,
-    )
-    if stored_message:
-        _analyze_and_store_artifact(db, message=stored_message, group_name=group.group_name)
-    return {"ok": True, "status": "stored"}
+    return {
+        "ok": True,
+        "status": "telegram_uses_telethon_session_sync",
+        "message": "Telegram channels now sync through the Telethon session flow, not Bot API webhooks.",
+    }
 
 
 @inbound_router.post("/whatsapp/{channel_id}/inbound", name="whatsapp_channel_inbound")
