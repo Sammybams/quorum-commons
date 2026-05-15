@@ -66,6 +66,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [savingTelegram, setSavingTelegram] = useState(false);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
   const [telegramActionChannelId, setTelegramActionChannelId] = useState<number | null>(null);
+  const [whatsAppActionChannelId, setWhatsAppActionChannelId] = useState<number | null>(null);
   const [telegramSetup, setTelegramSetup] = useState<TelegramSetupStatus | null>(null);
   const [merchantName, setMerchantName] = useState("");
   const [beneficiaryAccount, setBeneficiaryAccount] = useState("");
@@ -76,7 +77,6 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [telegramPasswords, setTelegramPasswords] = useState<Record<number, string>>({});
   const [groupFilters, setGroupFilters] = useState<Record<number, string>>({});
   const [whatsAppLabel, setWhatsAppLabel] = useState("Community WhatsApp");
-  const [whatsAppGatewayAccountId, setWhatsAppGatewayAccountId] = useState("");
 
   useEffect(() => {
     async function load() {
@@ -98,13 +98,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         setMerchantName(squad?.metadata?.merchant_name || "");
         setBeneficiaryAccount(squad?.metadata?.beneficiary_account || "");
         setDurationSeconds(squad?.metadata?.default_duration_seconds || "3600");
-        const groupEntries = await Promise.all(
-          loadedChannels.map(async (channel) => [
-            channel.id,
-            await apiGet<ChannelGroup[]>(`/workspaces/${found.id}/community-channels/${channel.id}/groups`),
-          ]),
-        );
-        setGroupsByChannel(Object.fromEntries(groupEntries));
+        setGroupsByChannel({});
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load integrations.");
       } finally {
@@ -115,6 +109,22 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     load();
   }, [params.workspaceSlug]);
 
+  useEffect(() => {
+    if (!workspace) {
+      return;
+    }
+    const shouldPollWhatsApp = channels.some(
+      (channel) => channel.provider === "whatsapp" && ["connecting", "qr_pending"].includes(channel.status),
+    );
+    if (!shouldPollWhatsApp) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      reloadChannels(workspace, { includeGroups: false }).catch(() => {});
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [channels, workspace]);
+
   const needsGoogleReconnect = useMemo(
     () => googleIntegration?.status === "connected" && googleIntegration?.metadata?.gmail !== "available",
     [googleIntegration],
@@ -122,16 +132,38 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const telegramChannels = useMemo(() => channels.filter((channel) => channel.provider === "telegram"), [channels]);
   const whatsAppChannels = useMemo(() => channels.filter((channel) => channel.provider === "whatsapp"), [channels]);
 
-  async function reloadChannels(currentWorkspace = workspace) {
+  async function refreshChannelGroups(workspaceId: number, channelId: number) {
+    const groups = await apiGet<ChannelGroup[]>(`/workspaces/${workspaceId}/community-channels/${channelId}/groups`);
+    setGroupsByChannel((current) => ({ ...current, [channelId]: groups }));
+  }
+
+  async function ensureChannelGroups(channelId: number) {
+    if (!workspace || groupsByChannel[channelId]) {
+      return;
+    }
+    await refreshChannelGroups(workspace.id, channelId);
+  }
+
+  async function reloadChannels(currentWorkspace = workspace, options?: { includeGroups?: boolean }) {
     if (!currentWorkspace) {
       return;
     }
+    const includeGroups = options?.includeGroups ?? true;
     const loadedChannels = await apiGet<CommunityChannel[]>(`/workspaces/${currentWorkspace.id}/community-channels`);
     setChannels(loadedChannels);
+    if (!includeGroups) {
+      setGroupsByChannel((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([channelId]) => loadedChannels.some((channel) => channel.id === Number(channelId))),
+        ),
+      );
+      return;
+    }
+    const channelIds = Object.keys(groupsByChannel).map(Number).filter((channelId) => loadedChannels.some((channel) => channel.id === channelId));
     const groupEntries = await Promise.all(
-      loadedChannels.map(async (channel) => [
-        channel.id,
-        await apiGet<ChannelGroup[]>(`/workspaces/${currentWorkspace.id}/community-channels/${channel.id}/groups`),
+      channelIds.map(async (channelId) => [
+        channelId,
+        await apiGet<ChannelGroup[]>(`/workspaces/${currentWorkspace.id}/community-channels/${channelId}/groups`),
       ]),
     );
     setGroupsByChannel(Object.fromEntries(groupEntries));
@@ -334,21 +366,121 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     if (!workspace) {
       return;
     }
+    const normalizedLabel = whatsAppLabel.trim().toLowerCase();
+    if (whatsAppChannels.some((channel) => channel.label.trim().toLowerCase() === normalizedLabel)) {
+      setError("A WhatsApp source with this label already exists.");
+      return;
+    }
     setSavingWhatsApp(true);
     setError(null);
     try {
-      await apiPost<CommunityChannel, { label: string; gateway_account_id?: string }>(
+      await apiPost<CommunityChannel, { label: string }>(
         `/workspaces/${workspace.id}/community-channels/whatsapp`,
         {
           label: whatsAppLabel.trim(),
-          gateway_account_id: whatsAppGatewayAccountId.trim() || undefined,
         },
       );
-      await reloadChannels(workspace);
+      await reloadChannels(workspace, { includeGroups: false });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to prepare WhatsApp sync.");
     } finally {
       setSavingWhatsApp(false);
+    }
+  }
+
+  async function startWhatsAppSession(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setWhatsAppActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<CommunityChannel, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/session/start`,
+        {},
+      );
+      await reloadChannels(workspace, { includeGroups: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start WhatsApp connection.");
+    } finally {
+      setWhatsAppActionChannelId(null);
+    }
+  }
+
+  async function refreshWhatsAppSession(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setWhatsAppActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiGet<CommunityChannel>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/session/status`,
+      );
+      await reloadChannels(workspace, { includeGroups: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to refresh WhatsApp status.");
+    } finally {
+      setWhatsAppActionChannelId(null);
+    }
+  }
+
+  async function discoverWhatsAppGroups(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setWhatsAppActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/discover-groups`,
+        {},
+      );
+      await reloadChannels(workspace, { includeGroups: false });
+      await refreshChannelGroups(workspace.id, channelId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to refresh WhatsApp groups.");
+    } finally {
+      setWhatsAppActionChannelId(null);
+    }
+  }
+
+  async function syncWhatsAppChannel(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setWhatsAppActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/sync`,
+        {},
+      );
+      await reloadChannels(workspace, { includeGroups: false });
+      await refreshChannelGroups(workspace.id, channelId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to import WhatsApp history.");
+    } finally {
+      setWhatsAppActionChannelId(null);
+    }
+  }
+
+  async function disconnectWhatsAppSession(channelId: number) {
+    if (!workspace) {
+      return;
+    }
+    setWhatsAppActionChannelId(channelId);
+    setError(null);
+    try {
+      await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/session/disconnect`,
+        {},
+      );
+      await reloadChannels(workspace, { includeGroups: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to disconnect WhatsApp session.");
+    } finally {
+      setWhatsAppActionChannelId(null);
     }
   }
 
@@ -359,7 +491,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     setError(null);
     try {
       await apiDelete(`/workspaces/${workspace.id}/community-channels/${channelId}`);
-      await reloadChannels(workspace);
+      await reloadChannels(workspace, { includeGroups: false });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to disconnect channel.");
     }
@@ -379,13 +511,18 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         ...current,
         [channelId]: (current[channelId] || []).map((group) => (group.id === groupId ? updated : group)),
       }));
-      await reloadChannels(workspace);
+      await reloadChannels(workspace, { includeGroups: false });
+      const channel = channels.find((item) => item.id === channelId)
+      if (syncEnabled && channel?.provider === "whatsapp" && channel.status === "connected") {
+        await syncWhatsAppChannel(channelId);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update group sync.");
     }
   }
 
   function renderChannelCard(channel: CommunityChannel) {
+    const groupsLoaded = Array.isArray(groupsByChannel[channel.id]);
     const groups = groupsByChannel[channel.id] || [];
     const selectedGroups = groups.filter((group) => group.sync_enabled);
     const discoverableGroups = groups.filter((group) => !group.sync_enabled);
@@ -412,16 +549,10 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
             </div>
           ) : (
             <div className="integration-summary-item">
-              <span>Channel id</span>
-              <strong>{String(channel.id)}</strong>
+              <span>Account</span>
+              <strong>{String(channel.metadata.display_name || channel.metadata.phone_number || channel.metadata.whatsapp_jid || "Waiting for QR connection")}</strong>
             </div>
           )}
-          {channel.provider === "whatsapp" ? (
-            <div className="integration-summary-item">
-              <span>Shared secret</span>
-              <strong>{String(channel.metadata.webhook_secret || "-")}</strong>
-            </div>
-          ) : null}
           <div className="integration-summary-item">
             <span>Groups discovered</span>
             <strong>{String(channel.metadata.discovered_group_count || 0)}</strong>
@@ -430,6 +561,12 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
             <span>Groups syncing</span>
             <strong>{String(channel.metadata.selected_group_count || 0)}</strong>
           </div>
+          {channel.provider === "whatsapp" ? (
+            <div className="integration-summary-item">
+              <span>Connection</span>
+              <strong>{channel.status === "connected" ? "Connected" : channel.status === "qr_pending" ? "Waiting for QR scan" : "Not connected"}</strong>
+            </div>
+          ) : null}
         </div>
         {channel.metadata.last_error ? <p className="form-error">{String(channel.metadata.last_error)}</p> : null}
         {channel.provider === "telegram" ? (
@@ -454,8 +591,14 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         ) : null}
         {channel.provider === "whatsapp" ? (
           <p className="muted-copy integration-inline-note">
-            Run the local gateway with this channel ID and secret, then pair the WhatsApp account before enabling group sync.
+            Scan the QR with the WhatsApp account for this workspace, choose the groups to watch, then import recent messages once after enabling a group.
           </p>
+        ) : null}
+        {channel.provider === "whatsapp" && typeof channel.metadata.qr_code_data_url === "string" && channel.metadata.qr_code_data_url ? (
+          <div className="whatsapp-qr-panel">
+            <img src={String(channel.metadata.qr_code_data_url)} alt="WhatsApp QR code" className="whatsapp-qr-image" />
+            <p className="muted-copy">Scan this QR with the WhatsApp account you want this workspace to use.</p>
+          </div>
         ) : null}
         <div className="integration-toolbar">
           {channel.provider === "telegram" ? (
@@ -494,15 +637,75 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               </button>
             </>
           ) : null}
+          {channel.provider === "whatsapp" ? (
+            <>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => startWhatsAppSession(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id}
+              >
+                {whatsAppActionChannelId === channel.id ? "Working..." : channel.status === "connected" ? "Reconnect WhatsApp" : "Connect WhatsApp"}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => refreshWhatsAppSession(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id}
+              >
+                Refresh status
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => discoverWhatsAppGroups(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id || channel.status !== "connected"}
+              >
+                Refresh groups
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => syncWhatsAppChannel(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id || channel.status !== "connected" || selectedGroups.length === 0}
+              >
+                Import recent messages
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => disconnectWhatsAppSession(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id || channel.status === "configured"}
+              >
+                Disconnect session
+              </button>
+            </>
+          ) : null}
           <button type="button" className="btn-secondary" onClick={() => disconnectChannel(channel.id)}>
-            Disconnect channel
+            Remove channel
           </button>
         </div>
-        {groups.length === 0 ? (
+        {!groupsLoaded ? (
+          <div className="integration-empty-state">
+            <p>
+              Group lists are loaded on demand for this source so the Integrations page stays fast.
+            </p>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => ensureChannelGroups(channel.id)}
+              disabled={channel.provider === "whatsapp" && channel.status !== "connected"}
+            >
+              Load groups
+            </button>
+          </div>
+        ) : groups.length === 0 ? (
           <div className="integration-empty-state">
             {channel.provider === "telegram"
               ? "No groups discovered yet. Complete login, then refresh groups."
-              : "No groups discovered yet. Add the connected account to the target groups first."}
+              : channel.status === "connected"
+                ? "No groups discovered yet. Refresh groups after the connected account has joined the target WhatsApp groups."
+                : "Connect WhatsApp first, then refresh groups once the account has joined the target groups."}
           </div>
         ) : (
           <div className="group-picker-layout">
@@ -511,6 +714,9 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
                 <strong>Selected groups</strong>
                 <span>{selectedGroups.length}</span>
               </div>
+              {channel.provider === "whatsapp" ? (
+                <p className="muted-copy">New messages in selected groups are monitored live. Older chat messages are imported when you run the history import.</p>
+              ) : null}
               {selectedGroups.length ? (
                 <div className="group-chip-list">
                   {selectedGroups.map((group) => (
@@ -521,7 +727,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
                       onClick={() => toggleGroupSync(channel.id, group.id, false)}
                     >
                       <span>{group.group_name}</span>
-                      <small>{group.message_count} synced</small>
+                      <small>{group.message_count} synced messages</small>
                     </button>
                   ))}
                 </div>
@@ -586,7 +792,6 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
       </header>
 
       {searchParams.get("status") === "connected" ? <p className="status-note">Google Workspace connected.</p> : null}
-      <p className="status-note">Quorum only syncs groups you explicitly enable. Everything else stays discovered but ignored.</p>
       {error ? <p className="form-error">{error}</p> : null}
 
       <section className="integrations-columns">
@@ -651,27 +856,20 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
           <div className="card-head">
             <div>
               <p className="eyebrow">WhatsApp</p>
-              <h2>{whatsAppChannels.length ? "Add another WhatsApp source" : "Gateway-selected groups"}</h2>
+              <h2>{whatsAppChannels.length ? "Add another WhatsApp account" : "Add a WhatsApp account"}</h2>
             </div>
-            <span className="status-pill pending">{whatsAppChannels.length} prepared</span>
+            <span className="status-pill pending">{whatsAppChannels.length} source{whatsAppChannels.length === 1 ? "" : "s"}</span>
           </div>
-          <p>Prepare a WhatsApp sync target here, then point the Baileys gateway at the generated inbound URL and secret.</p>
-          <div className="status-note">
-            Prepare the channel, connect the gateway, then enable only the approved groups below.
-          </div>
+          <p>Create a WhatsApp source for this workspace. Each source links one WhatsApp account and the specific groups that account should sync into Quorum.</p>
           <div className="form-stack">
             <label>
               Channel label
               <input value={whatsAppLabel} onChange={(event) => setWhatsAppLabel(event.target.value)} />
             </label>
-            <label>
-              Gateway account id
-              <input value={whatsAppGatewayAccountId} onChange={(event) => setWhatsAppGatewayAccountId(event.target.value)} placeholder="optional external account id" />
-            </label>
           </div>
           <div className="page-actions">
             <button type="button" className="btn-primary" onClick={connectWhatsApp} disabled={savingWhatsApp}>
-              {savingWhatsApp ? "Preparing..." : "Prepare WhatsApp"}
+              {savingWhatsApp ? "Creating..." : "Create WhatsApp source"}
             </button>
           </div>
         </article>
@@ -768,7 +966,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               Backend owner action needed: add {telegramSetup.missing_fields.join(", ")} to the backend environment, then reload this page.
             </p>
           ) : (
-            <p className="muted-copy">After saving the phone number, use the channel card below to send the login code and complete the Telegram session.</p>
+            <p className="muted-copy integration-hint">Save the number, then use the Telegram card below to finish sign-in.</p>
           )}
         </article>
 

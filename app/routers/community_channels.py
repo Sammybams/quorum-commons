@@ -4,12 +4,14 @@ import os
 import secrets
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import require_workspace_permission
 from ..services.community_intelligence import CommunityIntelligenceError, analyze_message
+from ..services.opportunities import refresh_opportunity_matches
 from ..services.telegram import (
     TelegramServiceError,
     telegram_list_groups,
@@ -41,6 +43,68 @@ def _telegram_backend_credentials() -> tuple[int, str]:
     return int(os.getenv("TELEGRAM_API_ID") or "0"), str(os.getenv("TELEGRAM_API_HASH") or "")
 
 
+def _whatsapp_gateway_base_url() -> str:
+    return str(os.getenv("WHATSAPP_GATEWAY_INTERNAL_URL") or "http://127.0.0.1:3001").rstrip("/")
+
+
+def _whatsapp_gateway_headers() -> dict[str, str]:
+    token = str(os.getenv("WHATSAPP_GATEWAY_TOKEN") or "").strip()
+    return {"x-internal-token": token} if token else {}
+
+
+async def _whatsapp_gateway_request(method: str, path: str, payload: dict | None = None) -> dict:
+    url = f"{_whatsapp_gateway_base_url()}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(method, url, json=payload, headers=_whatsapp_gateway_headers())
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise HTTPException(status_code=503, detail=f"WhatsApp gateway request failed: {detail}")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"WhatsApp gateway unavailable: {str(exc)}")
+
+
+def _apply_whatsapp_gateway_status(channel, payload: dict) -> None:
+    channel["status"] = str(payload.get("state") or channel.get("status") or "configured")
+    channel["display_name"] = str(payload.get("displayName") or channel.get("display_name") or "").strip() or None
+    channel["phone_number"] = str(payload.get("phoneNumber") or channel.get("phone_number") or "").strip() or None
+    channel["whatsapp_jid"] = str(payload.get("jid") or channel.get("whatsapp_jid") or "").strip() or None
+    channel["pairing_mode"] = "qr"
+    channel["qr_code_data_url"] = str(payload.get("qrCodeDataUrl") or "").strip() or None
+    channel["last_error"] = str(payload.get("lastError") or "").strip() or None
+
+    for source_key, target_key in {
+        "connectedAt": "connected_at",
+        "updatedAt": "updated_at",
+        "qrUpdatedAt": "qr_updated_at",
+    }.items():
+        raw_value = str(payload.get(source_key) or "").strip()
+        if not raw_value:
+            continue
+        try:
+            channel[target_key] = datetime.fromisoformat(raw_value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            continue
+
+
+def _upsert_whatsapp_groups(db: MongoStore, *, channel, groups: list[schemas.WhatsAppDiscoveredGroupIn]) -> int:
+    seen_at = datetime.utcnow()
+    for item in groups:
+        _discover_or_update_group(
+            db,
+            workspace_id=channel.workspace_id,
+            channel_id=channel.id,
+            provider="whatsapp",
+            external_group_id=item.external_group_id,
+            group_name=item.group_name,
+            seen_at=seen_at,
+        )
+    _refresh_channel_counts(db, channel)
+    return int(channel.get("discovered_group_count") or 0)
+
+
 def _channel_out(channel) -> schemas.CommunityChannelOut:
     metadata = {
         "webhook_url": channel.get("webhook_url"),
@@ -49,11 +113,14 @@ def _channel_out(channel) -> schemas.CommunityChannelOut:
         "phone_number": channel.get("phone_number"),
         "group_type": channel.get("group_type"),
         "display_name": channel.get("display_name"),
-        "gateway_account_id": channel.get("gateway_account_id"),
         "selected_group_count": channel.get("selected_group_count", 0),
         "discovered_group_count": channel.get("discovered_group_count", 0),
         "last_error": channel.get("last_error"),
         "webhook_secret": channel.get("webhook_secret"),
+        "whatsapp_jid": channel.get("whatsapp_jid"),
+        "pairing_mode": channel.get("pairing_mode"),
+        "qr_code_data_url": channel.get("qr_code_data_url"),
+        "qr_updated_at": channel.get("qr_updated_at").isoformat() if channel.get("qr_updated_at") else None,
     }
     return schemas.CommunityChannelOut(
         id=channel.id,
@@ -167,8 +234,32 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
     if existing:
         return existing
 
+    recent_context_messages = [
+        str(item.get("text") or "").strip()
+        for item in db.find_many(
+            "channel_messages",
+            {
+                "workspace_id": message.workspace_id,
+                "channel_id": message.channel_id,
+                "external_group_id": message.external_group_id,
+            },
+            sort=[("received_at", DESC)],
+            limit=6,
+        )
+        if item.id != message.id and str(item.get("text") or "").strip()
+    ][:5]
+
+    sync_source = str((message.get("raw_payload") or {}).get("sync_source") or "live").strip().lower()
     try:
-        artifact = analyze_message(text=message.text, provider=message.provider, group_name=group_name)
+        artifact = analyze_message(
+            text=message.text,
+            provider=message.provider,
+            group_name=group_name,
+            message_type=message.message_type,
+            attachment_name=str((message.get("raw_payload") or {}).get("attachment_name") or "").strip() or None,
+            recent_messages=list(reversed(recent_context_messages)),
+            prefer_lightweight=sync_source == "history",
+        )
     except CommunityIntelligenceError as exc:
         return db.insert(
             "message_artifacts",
@@ -180,9 +271,13 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
                 "summary": f"Analysis failed: {str(exc)[:180]}",
                 "extracted_payload": {},
                 "status": "analysis_failed",
+                "reviewed_at": None,
+                "reviewed_by_user_id": None,
+                "review_note": None,
             },
         )
 
+    status = _artifact_initial_status(artifact.artifact_type, artifact.confidence)
     stored = db.insert(
         "message_artifacts",
         {
@@ -192,27 +287,52 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
             "confidence": artifact.confidence,
             "summary": artifact.summary,
             "extracted_payload": artifact.extracted_payload,
-            "status": "ready",
+            "status": status,
+            "reviewed_at": None,
+            "reviewed_by_user_id": None,
+            "review_note": None,
         },
     )
-    if artifact.artifact_type == "opportunity":
-        payload = artifact.extracted_payload or {}
-        db.insert(
-            "opportunities",
-            {
-                "workspace_id": message.workspace_id,
-                "message_id": message.id,
-                "source": message.provider,
-                "title": str(payload.get("title") or artifact.summary or message.text[:120]),
-                "description": message.text,
-                "location": payload.get("location"),
-                "trade_tags": payload.get("trade_tags") or [],
-                "deadline": payload.get("deadline"),
-                "contact": payload.get("contact"),
-                "status": "open",
-            },
-        )
+    if status == "ready":
+        _apply_artifact_outcome(db, artifact=stored, message=message)
     return stored
+
+
+def _artifact_initial_status(artifact_type: str, confidence: float) -> str:
+    normalized_type = str(artifact_type or "other").strip().lower()
+    if normalized_type == "other":
+        return "ignored"
+    if confidence >= 0.75:
+        return "ready"
+    return "needs_review"
+
+
+def _apply_artifact_outcome(db: MongoStore, *, artifact, message):
+    if artifact.artifact_type != "opportunity":
+        return None
+    existing = db.find_one("opportunities", {"workspace_id": message.workspace_id, "message_id": message.id})
+    if existing:
+        refresh_opportunity_matches(db, opportunity=existing)
+        return existing
+
+    payload = artifact.get("extracted_payload") or {}
+    created = db.insert(
+        "opportunities",
+        {
+            "workspace_id": message.workspace_id,
+            "message_id": message.id,
+            "source": message.provider,
+            "title": str(payload.get("title") or artifact.get("summary") or message.text[:120]),
+            "description": message.text,
+            "location": payload.get("location"),
+            "trade_tags": payload.get("trade_tags") or [],
+            "deadline": payload.get("deadline"),
+            "contact": payload.get("contact"),
+            "status": "open",
+        },
+    )
+    refresh_opportunity_matches(db, opportunity=created)
+    return created
 
 
 def _gateway_config_out(channel, selected_groups: list[str]) -> schemas.WhatsAppGatewayConfigOut:
@@ -254,6 +374,9 @@ def _artifact_out(artifact) -> schemas.MessageArtifactOut:
         summary=artifact.get("summary"),
         extracted_payload=artifact.get("extracted_payload") or {},
         status=artifact.get("status") or "ready",
+        reviewed_at=artifact.get("reviewed_at"),
+        reviewed_by_user_id=artifact.get("reviewed_by_user_id"),
+        review_note=artifact.get("review_note"),
         created_at=artifact.created_at,
     )
 
@@ -295,8 +418,18 @@ async def _discover_telegram_groups(db: MongoStore, channel) -> int:
     return len(groups)
 
 
+async def _refresh_whatsapp_channel_status(db: MongoStore, channel):
+    try:
+        payload = await _whatsapp_gateway_request("GET", f"/internal/sessions/{channel.id}")
+    except HTTPException:
+        return channel
+    _apply_whatsapp_gateway_status(channel, payload)
+    db.save("community_channels", channel)
+    return channel
+
+
 @router.get("", response_model=list[schemas.CommunityChannelOut])
-def list_community_channels(
+async def list_community_channels(
     workspace_id: int,
     db: MongoStore = Depends(get_db),
     _membership=Depends(require_workspace_permission("integrations.manage")),
@@ -304,6 +437,8 @@ def list_community_channels(
     channels = db.find_many("community_channels", {"workspace_id": workspace_id}, sort=[("created_at", DESC)])
     for channel in channels:
         _refresh_channel_counts(db, channel)
+        if channel.provider == "whatsapp":
+            await _refresh_whatsapp_channel_status(db, channel)
     refreshed = db.find_many("community_channels", {"workspace_id": workspace_id}, sort=[("created_at", DESC)])
     return [_channel_out(channel) for channel in refreshed]
 
@@ -602,30 +737,145 @@ def connect_whatsapp_channel(
         "community_channels",
         {"workspace_id": workspace_id, "provider": "whatsapp", "label": payload.label.strip()},
     )
-    channel_id = existing.id if existing else db.next_id("community_channels")
-    secret = existing.get("webhook_secret") if existing else secrets.token_urlsafe(24)
+    if existing:
+        raise HTTPException(status_code=409, detail="A WhatsApp source with this label already exists.")
+    channel_id = db.next_id("community_channels")
+    secret = secrets.token_urlsafe(24)
     inbound_url = str(request.url_for("whatsapp_channel_inbound", channel_id=channel_id))
     record = {
         "id": channel_id,
         "workspace_id": workspace_id,
         "provider": "whatsapp",
         "label": payload.label.strip(),
-        "status": "pending_gateway",
-        "gateway_account_id": payload.gateway_account_id,
+        "status": "configured",
         "webhook_url": inbound_url,
         "webhook_secret": secret,
-        "connected_at": existing.get("connected_at") if existing else datetime.utcnow(),
+        "connected_at": None,
         "updated_at": datetime.utcnow(),
-        "selected_group_count": existing.get("selected_group_count", 0) if existing else 0,
-        "discovered_group_count": existing.get("discovered_group_count", 0) if existing else 0,
+        "selected_group_count": 0,
+        "discovered_group_count": 0,
         "last_error": None,
+        "pairing_mode": "qr",
+        "qr_code_data_url": None,
+        "qr_updated_at": None,
+        "whatsapp_jid": None,
+        "display_name": None,
+        "phone_number": None,
     }
-    if existing:
-        existing.update(record)
-        channel = db.save("community_channels", existing)
-    else:
-        channel = db.insert("community_channels", record)
+    channel = db.insert("community_channels", record)
     return _channel_out(channel)
+
+
+@router.post("/{channel_id}/whatsapp/session/start", response_model=schemas.CommunityChannelOut)
+async def start_whatsapp_channel_session(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    payload = await _whatsapp_gateway_request(
+        "POST",
+        "/internal/sessions/connect",
+        {
+            "channelId": channel.id,
+            "label": channel.label,
+            "sharedSecret": str(channel.get("webhook_secret") or ""),
+            "pairingMode": "qr",
+        },
+    )
+    _apply_whatsapp_gateway_status(channel, payload)
+    db.save("community_channels", channel)
+    return _channel_out(channel)
+
+
+@router.get("/{channel_id}/whatsapp/session/status", response_model=schemas.CommunityChannelOut)
+async def get_whatsapp_channel_session_status(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    channel = await _refresh_whatsapp_channel_status(db, channel)
+    return _channel_out(channel)
+
+
+@router.post("/{channel_id}/whatsapp/discover-groups", response_model=schemas.ChannelSyncResultOut)
+async def discover_whatsapp_groups(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    payload = await _whatsapp_gateway_request("GET", f"/internal/sessions/{channel.id}/groups")
+    groups = [
+        schemas.WhatsAppDiscoveredGroupIn(
+            external_group_id=str(group.get("external_group_id") or ""),
+            group_name=str(group.get("group_name") or ""),
+        )
+        for group in payload.get("groups") or []
+        if str(group.get("external_group_id") or "").endswith("@g.us") and str(group.get("group_name") or "").strip()
+    ]
+    discovered = _upsert_whatsapp_groups(db, channel=channel, groups=groups)
+    channel["last_error"] = None
+    db.save("community_channels", channel)
+    return schemas.ChannelSyncResultOut(message="WhatsApp groups refreshed.", discovered_groups=discovered)
+
+
+@router.post("/{channel_id}/whatsapp/sync", response_model=schemas.ChannelSyncResultOut)
+async def sync_whatsapp_channel(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    selected_group_count = db.count(
+        "channel_group_links",
+        {"workspace_id": workspace_id, "channel_id": channel_id, "sync_enabled": True},
+    )
+    if not selected_group_count:
+        return schemas.ChannelSyncResultOut(message="No WhatsApp groups have sync enabled yet.")
+
+    payload = await _whatsapp_gateway_request("POST", f"/internal/sessions/{channel.id}/sync-history", {})
+    channel = await _refresh_whatsapp_channel_status(db, channel)
+    channel["last_error"] = None
+    channel["updated_at"] = datetime.utcnow()
+    db.save("community_channels", channel)
+    return schemas.ChannelSyncResultOut(
+        message="WhatsApp history import complete.",
+        discovered_groups=int(channel.get("discovered_group_count") or 0),
+        synced_messages=int(payload.get("syncedMessages") or 0),
+    )
+
+
+@router.post("/{channel_id}/whatsapp/session/disconnect", response_model=schemas.AuthStatusResponse)
+async def disconnect_whatsapp_channel_session(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    await _whatsapp_gateway_request("POST", f"/internal/sessions/{channel.id}/disconnect", {})
+    channel["status"] = "disconnected"
+    channel["qr_code_data_url"] = None
+    channel["last_error"] = None
+    channel["updated_at"] = datetime.utcnow()
+    db.save("community_channels", channel)
+    return schemas.AuthStatusResponse(message="WhatsApp session disconnected.")
 
 
 @router.delete("/{channel_id}", response_model=schemas.AuthStatusResponse)
@@ -747,6 +997,21 @@ def list_message_artifacts(
     return [_artifact_out(artifact) for artifact in artifacts]
 
 
+@router.get("/review-queue", response_model=list[schemas.MessageArtifactOut])
+def list_review_queue(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    artifacts = db.find_many(
+        "message_artifacts",
+        {"workspace_id": workspace_id, "status": {"$in": ["needs_review", "analysis_failed"]}},
+        sort=[("created_at", DESC)],
+        limit=100,
+    )
+    return [_artifact_out(artifact) for artifact in artifacts]
+
+
 @router.post("/messages/{message_id}/analyze", response_model=schemas.MessageArtifactOut)
 def analyze_channel_message(
     workspace_id: int,
@@ -759,6 +1024,48 @@ def analyze_channel_message(
         raise HTTPException(status_code=404, detail="Message not found")
     group = db.find_by_id("channel_group_links", message.get("group_link_id"))
     artifact = _analyze_and_store_artifact(db, message=message, group_name=group.group_name if group else None)
+    return _artifact_out(artifact)
+
+
+@router.post("/artifacts/{artifact_id}/approve", response_model=schemas.MessageArtifactOut)
+def approve_message_artifact(
+    workspace_id: int,
+    artifact_id: int,
+    payload: schemas.ArtifactReviewDecisionRequest,
+    db: MongoStore = Depends(get_db),
+    membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    artifact = db.find_one("message_artifacts", {"workspace_id": workspace_id, "id": artifact_id})
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    message = db.find_one("channel_messages", {"workspace_id": workspace_id, "id": artifact.message_id})
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found for artifact")
+    artifact["status"] = "approved"
+    artifact["reviewed_at"] = datetime.utcnow()
+    artifact["reviewed_by_user_id"] = membership.user_id
+    artifact["review_note"] = payload.note.strip() if payload.note else None
+    db.save("message_artifacts", artifact)
+    _apply_artifact_outcome(db, artifact=artifact, message=message)
+    return _artifact_out(artifact)
+
+
+@router.post("/artifacts/{artifact_id}/reject", response_model=schemas.MessageArtifactOut)
+def reject_message_artifact(
+    workspace_id: int,
+    artifact_id: int,
+    payload: schemas.ArtifactReviewDecisionRequest,
+    db: MongoStore = Depends(get_db),
+    membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    artifact = db.find_one("message_artifacts", {"workspace_id": workspace_id, "id": artifact_id})
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact["status"] = "rejected"
+    artifact["reviewed_at"] = datetime.utcnow()
+    artifact["reviewed_by_user_id"] = membership.user_id
+    artifact["review_note"] = payload.note.strip() if payload.note else None
+    db.save("message_artifacts", artifact)
     return _artifact_out(artifact)
 
 
@@ -780,6 +1087,24 @@ async def telegram_channel_webhook(
     }
 
 
+@inbound_router.post("/whatsapp/{channel_id}/discover-groups")
+async def whatsapp_channel_discover_groups(
+    channel_id: int,
+    payload: schemas.WhatsAppDiscoveredGroupsIn,
+    x_quorum_channel_secret: str | None = Header(default=None),
+    db: MongoStore = Depends(get_db),
+):
+    channel = db.find_one("community_channels", {"id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if channel.get("webhook_secret") and channel.get("webhook_secret") != x_quorum_channel_secret:
+        raise HTTPException(status_code=403, detail="Invalid WhatsApp channel secret")
+    discovered = _upsert_whatsapp_groups(db, channel=channel, groups=payload.groups)
+    channel["last_error"] = None
+    db.save("community_channels", channel)
+    return {"ok": True, "discovered_groups": discovered}
+
+
 @inbound_router.post("/whatsapp/{channel_id}/inbound", name="whatsapp_channel_inbound")
 async def whatsapp_channel_inbound(
     channel_id: int,
@@ -798,9 +1123,14 @@ async def whatsapp_channel_inbound(
     if not remote_jid.endswith("@g.us"):
         return {"ok": True, "status": "ignored_non_group"}
 
+    message_type = str(payload.get("message_type") or "text").strip().lower()
     text = str(payload.get("body") or payload.get("caption") or "").strip()
+    if not text and message_type in {"image", "document", "video"}:
+        attachment_name = str(payload.get("attachment_name") or "").strip()
+        text = f"Shared {message_type}{f': {attachment_name}' if attachment_name else ''}"
     if not text:
         return {"ok": True, "status": "ignored_empty"}
+    sync_source = str(payload.get("sync_source") or "live").strip().lower()
 
     received_at_raw = payload.get("received_at")
     if received_at_raw:
@@ -830,7 +1160,7 @@ async def whatsapp_channel_inbound(
         external_message_id=str(payload.get("message_id")) if payload.get("message_id") else None,
         sender_name=payload.get("push_name"),
         sender_handle=payload.get("sender_jid") or payload.get("phone_number"),
-        message_type=str(payload.get("message_type") or "text"),
+        message_type=message_type,
         text=text,
         raw_payload=payload,
         received_at=received_at,

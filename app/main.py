@@ -11,12 +11,14 @@ from .routers import (
     community_channels,
     dues,
     events,
+    financial_health,
     health,
     integrations,
     invitations,
     links,
     meetings,
     members,
+    opportunities,
     public,
     reports,
     roles,
@@ -61,12 +63,14 @@ app.include_router(dues.router, prefix=api_prefix)
 app.include_router(dues.payments_router, prefix=api_prefix)
 app.include_router(events.router, prefix=api_prefix)
 app.include_router(campaigns.router, prefix=api_prefix)
+app.include_router(opportunities.router, prefix=api_prefix)
 app.include_router(links.router, prefix=api_prefix)
 app.include_router(announcements.router, prefix=api_prefix)
 app.include_router(tasks.router, prefix=api_prefix)
 app.include_router(meetings.router, prefix=api_prefix)
 app.include_router(budgets.router, prefix=api_prefix)
 app.include_router(reports.router, prefix=api_prefix)
+app.include_router(financial_health.router, prefix=api_prefix)
 app.include_router(public.router, prefix=api_prefix)
 app.include_router(webhooks.router, prefix=api_prefix)
 

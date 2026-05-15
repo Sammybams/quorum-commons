@@ -82,6 +82,7 @@ class MongoStore:
         "message_artifacts": "engagement",
         "opportunities": "engagement",
         "opportunity_matches": "engagement",
+        "financial_health_snapshots": "engagement",
         "event_attendees": "engagement",
         "meetings": "engagement",
         "meeting_minutes": "engagement",
@@ -117,6 +118,7 @@ class MongoStore:
         "message_artifacts",
         "opportunities",
         "opportunity_matches",
+        "financial_health_snapshots",
         "event_attendees",
         "campaigns",
         "funding_streams",
@@ -179,6 +181,7 @@ class MongoStore:
         self.collection("message_artifacts").create_index([("workspace_id", ASCENDING), ("message_id", ASCENDING), ("artifact_type", ASCENDING)])
         self.collection("opportunities").create_index([("workspace_id", ASCENDING), ("created_at", DESCENDING)])
         self.collection("opportunity_matches").create_index([("workspace_id", ASCENDING), ("opportunity_id", ASCENDING), ("member_id", ASCENDING)], unique=True, sparse=True)
+        self.collection("financial_health_snapshots").create_index([("workspace_id", ASCENDING), ("created_at", DESCENDING)])
         self.collection("event_attendees").create_index([("event_id", ASCENDING), ("member_id", ASCENDING)], unique=True, sparse=True)
         self.collection("event_attendees").create_index([("event_id", ASCENDING), ("email", ASCENDING)], unique=True, sparse=True)
         self.collection("campaigns").create_index([("slug", ASCENDING)], unique=True)

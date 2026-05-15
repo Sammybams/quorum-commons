@@ -655,7 +655,15 @@ class ChannelSyncResultOut(BaseModel):
 
 class WhatsAppChannelConnectRequest(BaseModel):
     label: str = Field(min_length=2, max_length=120)
-    gateway_account_id: str | None = Field(default=None, min_length=2, max_length=120)
+
+
+class WhatsAppDiscoveredGroupIn(BaseModel):
+    external_group_id: str = Field(min_length=3, max_length=255)
+    group_name: str = Field(min_length=1, max_length=255)
+
+
+class WhatsAppDiscoveredGroupsIn(BaseModel):
+    groups: list[WhatsAppDiscoveredGroupIn] = Field(default_factory=list)
 
 
 class ChannelGroupLinkOut(BaseModel):
@@ -709,6 +717,81 @@ class MessageArtifactOut(BaseModel):
     summary: str | None = None
     extracted_payload: dict[str, object] = Field(default_factory=dict)
     status: str
+    reviewed_at: datetime | None = None
+    reviewed_by_user_id: int | None = None
+    review_note: str | None = None
+    created_at: datetime
+
+
+class ArtifactReviewDecisionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=240)
+
+
+class OpportunityMatchOut(BaseModel):
+    id: int
+    workspace_id: int
+    opportunity_id: int
+    member_id: int
+    member_name: str
+    member_role: str
+    trade_category: str | None = None
+    location: str | None = None
+    availability: str | None = None
+    match_score: float
+    fit_label: str
+    matched_tags: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class OpportunityOut(BaseModel):
+    id: int
+    workspace_id: int
+    message_id: int | None = None
+    source: str
+    title: str
+    description: str
+    location: str | None = None
+    trade_tags: list[str] = Field(default_factory=list)
+    deadline: str | None = None
+    contact: str | None = None
+    status: str
+    match_count: int = 0
+    matches: list[OpportunityMatchOut] = Field(default_factory=list)
+    created_at: datetime
+
+
+class OpportunityMatchRefreshResult(BaseModel):
+    ok: bool = True
+    message: str
+    opportunity: OpportunityOut
+
+
+class FinancialHealthCategoryOut(BaseModel):
+    category_key: str
+    title: str
+    score: float
+    status: str
+    summary: str
+
+
+class FinancialHealthMetricOut(BaseModel):
+    key: str
+    label: str
+    value: str
+    trend: str
+
+
+class FinancialHealthSnapshotOut(BaseModel):
+    id: int | None = None
+    workspace_id: int
+    overall_score: float
+    overall_grade: str
+    summary: str
+    strengths: list[str] = Field(default_factory=list)
+    watchouts: list[str] = Field(default_factory=list)
+    categories: list[FinancialHealthCategoryOut] = Field(default_factory=list)
+    key_metrics: list[FinancialHealthMetricOut] = Field(default_factory=list)
     created_at: datetime
 
 

@@ -26,6 +26,8 @@ OWNER_PERMISSIONS = [
     "campaigns.view",
     "campaigns.manage",
     "campaigns.confirm_contribution",
+    "opportunities.view",
+    "opportunities.manage",
     "reports.view",
     "reports.generate",
     "budgets.view",
@@ -52,6 +54,8 @@ SECRETARY_PERMISSIONS = [
     "tasks.view",
     "tasks.assign",
     "campaigns.view",
+    "opportunities.view",
+    "opportunities.manage",
     "reports.view",
     "reports.generate",
     "budgets.view",
@@ -68,6 +72,7 @@ CORE_MEMBER_PERMISSIONS = [
     "meetings.view",
     "tasks.view",
     "campaigns.view",
+    "opportunities.view",
     "reports.view",
     "announcements.view",
 ]
@@ -95,7 +100,7 @@ def ensure_default_roles(db: MongoStore, workspace_id: int) -> dict[str, models.
                     "permissions": sorted(set(permissions)),
                 },
             )
-        elif role.get("is_system_role"):
+        elif role.get("is_system_role") or key == "core_member":
             changed = False
             if role.name != name:
                 role["name"] = name
