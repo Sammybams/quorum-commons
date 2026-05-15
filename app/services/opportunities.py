@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from ..database import DESC, MongoStore
+from ..rbac import role_display_name
 
 
 def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str, Any]]:
@@ -142,7 +143,7 @@ def _score_member_for_opportunity(*, member, opportunity, db: MongoStore) -> dic
 
     return {
         "member_name": user.full_name,
-        "member_role": role.name,
+        "member_role": role_display_name(role),
         "trade_category": member.get("trade_category"),
         "location": member.get("location"),
         "availability": member.get("availability"),

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..membership import sync_workspace_members_from_legacy
-from ..rbac import require_workspace_permission
+from ..rbac import MEMBER_ROLE_KEY, require_workspace_permission
 from ..security import verify_password
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -180,14 +180,14 @@ def transfer_ownership(
         raise HTTPException(status_code=404, detail="Target member not found")
 
     owner_role = db.find_one("roles", {"workspace_id": workspace_id, "key": "owner"})
-    fallback_role = db.find_by_id("roles", payload.fallback_role_id) if payload.fallback_role_id else db.find_one("roles", {"workspace_id": workspace_id, "key": "core_member"})
+    fallback_role = db.find_by_id("roles", payload.fallback_role_id) if payload.fallback_role_id else db.find_one("roles", {"workspace_id": workspace_id, "key": MEMBER_ROLE_KEY})
     if not owner_role or not fallback_role:
         raise HTTPException(status_code=404, detail="Required roles not found")
 
     current_owner_membership = db.find_one("workspace_members", {"workspace_id": workspace_id, "user_id": acting_user.id})
     if current_owner_membership:
         current_owner_membership["role_id"] = fallback_role.id
-        current_owner_membership["is_general_member"] = fallback_role.key == "core_member"
+        current_owner_membership["is_general_member"] = fallback_role.key == MEMBER_ROLE_KEY
         db.save("workspace_members", current_owner_membership)
 
     target_membership["role_id"] = owner_role.id

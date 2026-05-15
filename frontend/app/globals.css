@@ -2272,6 +2272,12 @@ p {
   align-items: center;
 }
 
+.pending-invites-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 .pending-invites-card .card-head p {
   color: var(--text-muted);
   font-size: 11px;
@@ -2292,13 +2298,13 @@ p {
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   min-height: 44px;
   padding: 8px 10px;
 }
 
 .invite-modal-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .pending-invite-row strong,
@@ -2555,24 +2561,29 @@ p {
 }
 
 .invite-link-box {
-  align-items: center;
   background: var(--surface-low);
   border-radius: 8px;
-  display: flex;
+  display: grid;
   gap: 12px;
-  justify-content: space-between;
   margin-bottom: 16px;
-  padding: 8px;
+  padding: 12px;
+}
+
+.invite-link-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.invite-link-summary strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .invite-link-box span {
   color: var(--text-muted);
   font-size: 12px;
-  min-width: 0;
-  overflow: hidden;
-  padding-left: 6px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .invite-link-box .btn-secondary {
@@ -2583,7 +2594,7 @@ p {
 .invite-link-actions {
   align-items: center;
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

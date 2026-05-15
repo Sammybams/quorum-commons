@@ -26,6 +26,7 @@ from .routers import (
     webhooks,
     workspaces,
 )
+from .rbac import normalize_member_role_defaults
 
 app = FastAPI(title=os.getenv("APP_NAME", "Quorum API"))
 
@@ -44,6 +45,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     store.ensure_indexes()
+    normalize_member_role_defaults(store)
 
 
 api_prefix = os.getenv("API_PREFIX", "/api/v1")

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import models, schemas
 from ..database import DESC, MongoStore, get_db
 from ..membership import role_key_from_input, sync_workspace_members_from_legacy
-from ..rbac import ensure_default_roles, require_workspace_permission
+from ..rbac import MEMBER_ROLE_KEY, ensure_default_roles, require_workspace_permission, role_display_name
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/members", tags=["members"])
 
@@ -21,7 +21,7 @@ def create_member(
 
     roles = ensure_default_roles(db, workspace_id)
     role_key = role_key_from_input(payload.role)
-    role = roles.get(role_key) or roles["core_member"]
+    role = roles.get(role_key) or roles[MEMBER_ROLE_KEY]
     email = payload.email.strip().lower()
 
     user = db.find_one("users", {"email": email})
@@ -49,7 +49,7 @@ def create_member(
             "contribution_capacity": payload.contribution_capacity,
             "phone_number": payload.phone_number,
             "dues_status": "defaulter",
-            "is_general_member": role.key == "core_member",
+            "is_general_member": role.key == MEMBER_ROLE_KEY,
             "status": "active",
             "joined_at": user.created_at,
         },
@@ -61,7 +61,7 @@ def create_member(
             "workspace_id": workspace_id,
             "full_name": user.full_name,
             "email": user.email,
-            "role": role.name,
+            "role": role_display_name(role),
             "level": payload.level,
             "trade_category": payload.trade_category,
             "location": payload.location,
@@ -101,14 +101,14 @@ def transfer_role(
         raise HTTPException(status_code=404, detail="Role transfer target not found")
 
     target["role_id"] = role.id
-    target["is_general_member"] = role.key == "core_member"
+    target["is_general_member"] = role.key == MEMBER_ROLE_KEY
     db.save("workspace_members", target)
 
     if payload.outgoing_member_role_id:
         fallback = db.find_one("roles", {"id": payload.outgoing_member_role_id, "workspace_id": workspace_id})
         if fallback:
             outgoing["role_id"] = fallback.id
-            outgoing["is_general_member"] = fallback.key == "core_member"
+            outgoing["is_general_member"] = fallback.key == MEMBER_ROLE_KEY
             db.save("workspace_members", outgoing)
 
     for task in db.find_many("tasks", {"workspace_id": workspace_id, "assigned_to_member_id": outgoing.id}):
@@ -128,7 +128,7 @@ def _member_out(db: MongoStore, membership: models.WorkspaceMember) -> schemas.W
         role_id=membership.role_id,
         full_name=user.full_name,
         email=user.email,
-        role=role.name,
+        role=role_display_name(role),
         role_key=role.key,
         level=membership.get("level"),
         trade_category=membership.get("trade_category"),

@@ -8,7 +8,7 @@ from .. import models, schemas
 from ..database import MongoStore, get_db
 from ..demo_seed import ensure_demo_workspace
 from ..membership import sync_workspace_members_from_legacy
-from ..rbac import ensure_default_roles, get_current_user, hydrate_user
+from ..rbac import ensure_default_roles, get_current_user, hydrate_user, role_display_name
 from ..security import (
     create_access_token,
     create_email_token,
@@ -42,7 +42,7 @@ def _auth_response(db: MongoStore, workspace: models.Workspace, membership: mode
         workspace_name=workspace.name,
         member_id=membership.id,
         member_name=user.full_name,
-        member_role=role.name,
+        member_role=role_display_name(role),
         user_id=membership.user_id,
         role_key=role.key,
         access_token=access_token,
@@ -56,7 +56,7 @@ def _workspace_member_out(membership: models.WorkspaceMember) -> schemas.AuthMeW
         workspace_slug=membership.workspace.slug,
         workspace_name=membership.workspace.name,
         member_id=membership.id,
-        role=membership.role.name,
+        role=role_display_name(membership.role),
         role_key=membership.role.key,
         permissions=membership.role.permissions,
     )

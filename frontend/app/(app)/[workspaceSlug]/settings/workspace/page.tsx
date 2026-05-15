@@ -72,7 +72,7 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
         setMembers(loadedMembers);
         setRoles(loadedRoles);
         setTargetMemberId(loadedMembers[0]?.id || null);
-        const fallback = loadedRoles.find((role) => role.key === "secretary") || loadedRoles.find((role) => role.key === "core_member") || loadedRoles[0] || null;
+        const fallback = loadedRoles.find((role) => role.key === "secretary") || loadedRoles.find((role) => role.key === "member") || loadedRoles[0] || null;
         setFallbackRoleId(fallback?.id || null);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load workspace.");

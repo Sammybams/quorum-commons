@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import models, schemas
 from ..database import ASC, MongoStore, get_db
-from ..rbac import ensure_default_roles, require_workspace_permission
+from ..rbac import ensure_default_roles, require_workspace_permission, role_display_name
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/roles", tags=["roles"])
 
@@ -73,7 +73,7 @@ def _role_out(role: models.Role) -> schemas.RoleOut:
         id=role.id,
         workspace_id=role.workspace_id,
         key=role.key,
-        name=role.name,
+        name=role_display_name(role),
         description=role.get("description"),
         is_system_role=role.get("is_system_role", False),
         permissions=role.permissions,

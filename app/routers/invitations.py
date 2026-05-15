@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import models, schemas
 from ..database import MongoStore, get_db
 from ..email import send_invitation_email
-from ..rbac import require_workspace_permission
+from ..rbac import MEMBER_ROLE_KEY, require_workspace_permission, role_display_name
 from ..security import hash_password
 from ..services.google import GoogleIntegrationError, access_token_for_integration, gmail_send_available, send_gmail_invitation
 from .auth import _auth_response
@@ -72,6 +72,24 @@ def list_invitations(
     return [_invitation_out(db, invitation) for invitation in invitations]
 
 
+@router.delete("/invitations/{invitation_id}", response_model=schemas.AuthStatusResponse)
+def delete_invitation(
+    workspace_id: int,
+    invitation_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership: models.WorkspaceMember = Depends(require_workspace_permission("members.invite")),
+):
+    invitation = db.find_one("invitations", {"workspace_id": workspace_id, "id": invitation_id})
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if invitation.status == "accepted":
+        raise HTTPException(status_code=400, detail="Accepted invitations can no longer be removed")
+    deleted = db.delete_one("invitations", {"workspace_id": workspace_id, "id": invitation_id, "status": "pending"})
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Invitation could not be removed")
+    return schemas.AuthStatusResponse(message="Invitation removed.")
+
+
 @router.post("/invite-links", response_model=schemas.InviteLinkOut, status_code=201)
 def create_invite_link(
     workspace_id: int,
@@ -121,7 +139,7 @@ def preview_invitation(token: str, db: MongoStore = Depends(get_db)):
         workspace_name=workspace.name,
         workspace_slug=workspace.slug,
         email=invitation.email,
-        role_name=role.name,
+        role_name=role_display_name(role),
         expires_at=invitation.expires_at,
     )
 
@@ -176,7 +194,7 @@ def preview_invite_link(token: str, db: MongoStore = Depends(get_db)):
     return schemas.InvitePreview(
         workspace_name=workspace.name,
         workspace_slug=workspace.slug,
-        role_name=role.name,
+        role_name=role_display_name(role),
         expires_at=link.expires_at,
     )
 
@@ -222,7 +240,7 @@ def _invitation_out(db: MongoStore, invitation: models.Invitation) -> schemas.In
         workspace_id=invitation.workspace_id,
         email=invitation.email,
         role_id=invitation.role_id,
-        role_name=role.name if role else "Unknown role",
+        role_name=role_display_name(role) if role else "Unknown role",
         token=invitation.token,
         status=invitation.status,
         email_delivery_status=invitation.get("email_delivery_status"),
@@ -239,7 +257,7 @@ def _invite_link_out(db: MongoStore, link: models.InviteLink) -> schemas.InviteL
         id=link.id,
         workspace_id=link.workspace_id,
         role_id=link.role_id,
-        role_name=role.name if role else "Unknown role",
+        role_name=role_display_name(role) if role else "Unknown role",
         token=link.token,
         is_active=link.is_active,
         expires_at=link.get("expires_at"),
@@ -257,7 +275,7 @@ def _ensure_membership(
     if membership:
         membership["role_id"] = role.id
         membership["status"] = "active"
-        membership["is_general_member"] = role.key == "core_member"
+        membership["is_general_member"] = role.key == MEMBER_ROLE_KEY
         return db.save("workspace_members", membership)
 
     return db.insert(
@@ -266,7 +284,7 @@ def _ensure_membership(
             "workspace_id": workspace.id,
             "user_id": user.id,
             "role_id": role.id,
-            "is_general_member": role.key == "core_member",
+            "is_general_member": role.key == MEMBER_ROLE_KEY,
             "dues_status": "defaulter",
             "status": "active",
             "joined_at": datetime.utcnow(),
@@ -300,7 +318,7 @@ def _send_workspace_invitation_email(
                 sender_name=(inviter.full_name if inviter else None) or integration.get("connected_name") or workspace.name,
                 to_email=invitation.email,
                 workspace_name=workspace.name,
-                role_name=role.name,
+                role_name=role_display_name(role),
                 token=invitation.token,
                 note=invitation.get("note"),
                 reply_to=inviter.email if inviter else None,
@@ -310,7 +328,7 @@ def _send_workspace_invitation_email(
             smtp_result = send_invitation_email(
                 to_email=invitation.email,
                 workspace_name=workspace.name,
-                role_name=role.name,
+                role_name=role_display_name(role),
                 token=invitation.token,
                 note=invitation.get("note"),
                 reply_to=inviter.email if inviter else None,
@@ -329,7 +347,7 @@ def _send_workspace_invitation_email(
     return send_invitation_email(
         to_email=invitation.email,
         workspace_name=workspace.name,
-        role_name=role.name,
+        role_name=role_display_name(role),
         token=invitation.token,
         note=invitation.get("note"),
         reply_to=inviter.email if inviter else None,

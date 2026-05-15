@@ -2,7 +2,7 @@ from datetime import datetime
 
 from . import models
 from .database import MongoStore
-from .rbac import ensure_default_roles
+from .rbac import MEMBER_ROLE_KEY, ensure_default_roles
 
 
 def sync_workspace_members_from_legacy(db: MongoStore, workspace: models.Workspace) -> None:
@@ -35,7 +35,7 @@ def sync_workspace_members_from_legacy(db: MongoStore, workspace: models.Workspa
                     "role_id": roles[role_key].id,
                     "level": legacy_member.get("level"),
                     "dues_status": legacy_member.get("dues_status", "defaulter"),
-                    "is_general_member": role_key == "core_member",
+                    "is_general_member": role_key == MEMBER_ROLE_KEY,
                     "status": "active",
                     "joined_at": legacy_member.get("created_at") or datetime.utcnow(),
                 },
@@ -48,4 +48,4 @@ def role_key_from_input(role: str | None) -> str:
         return "owner"
     if normalized in {"secretary", "general_secretary", "scribe"}:
         return "secretary"
-    return "core_member"
+    return MEMBER_ROLE_KEY

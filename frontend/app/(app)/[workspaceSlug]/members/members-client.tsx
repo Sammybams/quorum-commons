@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { apiGet, apiPost } from "@/lib/api";
+import { apiDelete, apiGet, apiPost } from "@/lib/api";
 
 type Workspace = { id: number; slug: string; name: string };
 type Member = {
@@ -21,6 +21,12 @@ type Member = {
   dues_status?: string;
 };
 type Role = { id: number; name: string; key: string; is_system_role: boolean };
+type Integration = {
+  provider: string;
+  status: string;
+  configured: boolean;
+  metadata: Record<string, string>;
+};
 type Invitation = {
   id: number;
   email: string;
@@ -45,6 +51,7 @@ export default function MembersClient({
   const [roles, setRoles] = useState<Role[]>([]);
   const [pendingInvitations, setPendingInvitations] = useState<Invitation[]>([]);
   const [inviteLinks, setInviteLinks] = useState<InviteLink[]>([]);
+  const [googleIntegration, setGoogleIntegration] = useState<Integration | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [roleId, setRoleId] = useState<number | null>(null);
@@ -53,6 +60,7 @@ export default function MembersClient({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [copiedInviteId, setCopiedInviteId] = useState<number | null>(null);
+  const [removingInvitationId, setRemovingInvitationId] = useState<number | null>(null);
 
   useEffect(() => {
     async function loadInviteData() {
@@ -65,8 +73,14 @@ export default function MembersClient({
         setRoles(loadedRoles);
         setPendingInvitations(loadedInvitations);
         setInviteLinks(loadedInviteLinks);
-        const coreRole = loadedRoles.find((item) => item.key === "core_member") || loadedRoles[0] || null;
+        const coreRole = loadedRoles.find((item) => item.key === "member") || loadedRoles[0] || null;
         setRoleId(coreRole?.id || null);
+        try {
+          const loadedIntegrations = await apiGet<Integration[]>(`/workspaces/${workspace.id}/integrations`);
+          setGoogleIntegration(loadedIntegrations.find((item) => item.provider === "google_workspace") || null);
+        } catch {
+          setGoogleIntegration(null);
+        }
       } catch {
         // Role/invite loading requires a logged-in admin token; the page itself can still render read-only.
       }
@@ -85,13 +99,15 @@ export default function MembersClient({
     }
     return `${window.location.origin}/join/${token}`;
   }, [inviteLinks]);
-  const recommendedMemberRole = useMemo(
-    () => roles.find((item) => item.key === "core_member") || null,
-    [roles],
-  );
   const selectedRole = useMemo(
     () => roles.find((item) => item.id === roleId) || null,
     [roleId, roles],
+  );
+  const googleConnected = googleIntegration?.status === "connected";
+  const gmailReady = googleConnected && googleIntegration?.metadata?.gmail === "available";
+  const visiblePendingInvitations = useMemo(
+    () => pendingInvitations.filter((invitation) => invitation.status === "pending"),
+    [pendingInvitations],
   );
 
   async function copyInviteLink() {
@@ -117,6 +133,15 @@ export default function MembersClient({
     window.setTimeout(() => setCopiedInviteId(null), 1800);
   }
 
+  async function reloadInvitations() {
+    const [loadedInvitations, loadedInviteLinks] = await Promise.all([
+      apiGet<Invitation[]>(`/workspaces/${workspace.id}/invitations`),
+      apiGet<InviteLink[]>(`/workspaces/${workspace.id}/invite-links`),
+    ]);
+    setPendingInvitations(loadedInvitations);
+    setInviteLinks(loadedInviteLinks);
+  }
+
   async function createInviteLink() {
     if (!roleId) {
       setError("Select a role before creating an invite link.");
@@ -129,11 +154,24 @@ export default function MembersClient({
       const link = await apiPost<InviteLink, { role_id: number }>(`/workspaces/${workspace.id}/invite-links`, {
         role_id: roleId,
       });
-      setInviteLinks((current) => [link, ...current]);
+      setInviteLinks((current) => [link, ...current.filter((item) => item.id !== link.id)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create invite link.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function removeInvitation(invitationId: number) {
+    setRemovingInvitationId(invitationId);
+    setError(null);
+    try {
+      await apiDelete(`/workspaces/${workspace.id}/invitations/${invitationId}`);
+      await reloadInvitations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove invitation.");
+    } finally {
+      setRemovingInvitationId(null);
     }
   }
 
@@ -178,12 +216,14 @@ export default function MembersClient({
           </p>
         </div>
         <div className="page-actions">
-          <Link href={`/${workspace.slug}/settings/integrations`} className="btn-ghost">
-            <span className="material-symbols-outlined" aria-hidden="true">
-              hub
-            </span>
-            Connect Google
-          </Link>
+          {!gmailReady ? (
+            <Link href={`/${workspace.slug}/settings/integrations`} className="btn-ghost">
+              <span className="material-symbols-outlined" aria-hidden="true">
+                hub
+              </span>
+              {googleConnected ? "Reconnect Google" : "Connect Google"}
+            </Link>
+          ) : null}
           <button type="button" className="btn-secondary" onClick={() => setInviteOpen(true)}>
             <span className="material-symbols-outlined" aria-hidden="true">
               person_add
@@ -196,19 +236,26 @@ export default function MembersClient({
         </div>
       </header>
 
-      {pendingInvitations.length > 0 ? (
+      {visiblePendingInvitations.length > 0 ? (
         <section className="panel-card pending-invites-card">
           <div className="card-head compact">
             <div>
               <h2>Pending invitations</h2>
-              <p>{pendingInvitations.length} {pendingInvitations.length === 1 ? "person has" : "people have"} not accepted yet.</p>
+              <p>{visiblePendingInvitations.length} {visiblePendingInvitations.length === 1 ? "person has" : "people have"} not accepted yet.</p>
             </div>
-            <button type="button" className="btn-secondary" onClick={() => setInviteOpen(true)}>
-              Manage invites
-            </button>
+            <div className="pending-invites-actions">
+              {inviteUrl ? (
+                <button type="button" className="btn-ghost" onClick={copyInviteLink}>
+                  {copied ? "Copied" : "Copy link"}
+                </button>
+              ) : null}
+              <button type="button" className="btn-secondary" onClick={() => setInviteOpen(true)}>
+                Manage invites
+              </button>
+            </div>
           </div>
           <div className="pending-invite-list">
-            {pendingInvitations.map((invitation) => (
+            {visiblePendingInvitations.map((invitation) => (
               <div className="pending-invite-row" key={invitation.id}>
                 <div>
                   <strong>{invitation.email}</strong>
@@ -220,6 +267,14 @@ export default function MembersClient({
                 <span className={`status-pill ${invitation.email_delivery_status === "sent" ? "ok" : "pending"}`}>
                   {invitation.status}
                 </span>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => removeInvitation(invitation.id)}
+                  disabled={removingInvitationId === invitation.id}
+                >
+                  {removingInvitationId === invitation.id ? "Removing..." : "Remove"}
+                </button>
                 <button type="button" className="btn-secondary" onClick={() => copyDirectInvite(invitation)}>
                   {copiedInviteId === invitation.id ? "Copied" : "Copy invite link"}
                 </button>
@@ -317,19 +372,23 @@ export default function MembersClient({
             </div>
 
             <div className="invite-link-box">
-              <span>{inviteUrl || "No bulk invite link yet. Generate one to copy a /join link."}</span>
-              <small className="muted-copy">
-                Bulk member access should usually use <strong>{recommendedMemberRole?.name || "Member"}</strong>. Use officer or custom roles only when the person should manage part of the workspace.
-              </small>
+              <div className="invite-link-summary">
+                <strong>{inviteUrl ? "Bulk invite link ready" : "No bulk invite link yet"}</strong>
+                <span>{inviteUrl || "Generate a /join link for standard member onboarding."}</span>
+                <small className="muted-copy">
+                  {gmailReady
+                    ? "Invite emails will send through the connected Gmail account."
+                    : googleConnected
+                      ? "Reconnect Google to enable Gmail invite sending."
+                      : "Connect Google if you want invite emails sent through Gmail."}
+                </small>
+              </div>
               <div className="invite-link-actions">
                 <Link href={`/${workspace.slug}/settings/integrations`} className="btn-ghost">
-                  Connect Google
+                  {gmailReady ? "Manage Google" : googleConnected ? "Reconnect Google" : "Connect Google"}
                 </Link>
                 <button type="button" className="btn-secondary" onClick={createInviteLink} disabled={loading || !roleId}>
                   {inviteUrl ? "Regenerate link" : "Generate link"}
-                </button>
-                <button type="button" className="btn-secondary" onClick={copyInviteLink} disabled={!inviteUrl}>
-                  {copied ? "Copied" : "Copy link"}
                 </button>
               </div>
             </div>
@@ -360,9 +419,9 @@ export default function MembersClient({
                   </span>
                 </span>
                 <small className="muted-copy">
-                  {selectedRole?.key === "core_member"
-                    ? "Recommended default for regular members. They can sign in, view opportunities, and access the community dashboard."
-                    : "Use this only if the invitee should have a more specific officer or custom workspace role."}
+                  {selectedRole?.key === "member"
+                    ? "Use Member for standard access."
+                    : "Use another role only for leads or admins."}
                 </small>
               </label>
               <label>
@@ -377,14 +436,22 @@ export default function MembersClient({
 
               {error ? <p className="form-error">{error}</p> : null}
 
-              {pendingInvitations.length > 0 ? (
+              {visiblePendingInvitations.length > 0 ? (
                 <div className="invite-modal-list">
-                  {pendingInvitations.slice(0, 4).map((invitation) => (
+                  {visiblePendingInvitations.slice(0, 4).map((invitation) => (
                     <div className="invite-modal-row" key={invitation.id}>
                       <div>
                         <span>{invitation.email}</span>
                         <strong>{invitation.role_name} · {deliveryLabel(invitation.email_delivery_status, invitation.email_delivery_provider, invitation.email_delivery_sender)}</strong>
                       </div>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => removeInvitation(invitation.id)}
+                        disabled={removingInvitationId === invitation.id}
+                      >
+                        {removingInvitationId === invitation.id ? "Removing..." : "Remove"}
+                      </button>
                       <button type="button" className="btn-secondary" onClick={() => copyDirectInvite(invitation)}>
                         {copiedInviteId === invitation.id ? "Copied" : "Copy link"}
                       </button>

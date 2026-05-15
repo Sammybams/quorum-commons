@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from . import models
 from .database import MongoStore
 from .rbac import ensure_default_roles
+from .rbac import MEMBER_ROLE_KEY
 from .services.reports import compile_report_snapshot, fallback_report_narrative
 
 
@@ -112,7 +113,7 @@ def _seed_members(db: MongoStore, workspace: models.Workspace) -> tuple[models.W
     roles = ensure_default_roles(db, workspace.id)
     owner_role = roles["owner"]
     secretary_role = roles["secretary"]
-    core_role = roles["core_member"]
+    core_role = roles[MEMBER_ROLE_KEY]
 
     member_specs = [
         ("Ayo Owolabi", DEMO_OWNER_EMAIL, owner_role, "President", "paid"),
@@ -135,7 +136,7 @@ def _seed_members(db: MongoStore, workspace: models.Workspace) -> tuple[models.W
             role_id=role.id,
             level=level,
             dues_status=dues_status,
-            is_general_member=role.key == "core_member",
+            is_general_member=role.key == MEMBER_ROLE_KEY,
             joined_at=start + timedelta(days=index),
         )
         _ensure_member_record(

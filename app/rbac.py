@@ -42,6 +42,9 @@ OWNER_PERMISSIONS = [
     "ownership.transfer",
 ]
 
+MEMBER_ROLE_KEY = "member"
+LEGACY_MEMBER_ROLE_KEY = "core_member"
+
 SECRETARY_PERMISSIONS = [
     "dashboard.view",
     "members.view",
@@ -80,14 +83,72 @@ CORE_MEMBER_PERMISSIONS = [
 DEFAULT_ROLE_DEFINITIONS = [
     ("owner", "Super Admin", "Primary workspace owner role with full access to every module and setting.", OWNER_PERMISSIONS, True),
     ("secretary", "Secretary", "System secretary role for meetings, minutes, and announcements.", SECRETARY_PERMISSIONS, True),
-    ("core_member", "Member", "Default community member role with read access to the workspace dashboard, opportunities, financial health, and member-facing modules.", CORE_MEMBER_PERMISSIONS, False),
+    (MEMBER_ROLE_KEY, "Member", "Default community member role with read access to the workspace dashboard, opportunities, financial health, and member-facing modules.", CORE_MEMBER_PERMISSIONS, False),
 ]
+
+
+def role_display_name(role_or_key: models.Role | str | None, name: str | None = None) -> str:
+    if hasattr(role_or_key, "get"):
+        key = role_or_key.get("key")
+        current_name = role_or_key.get("name")
+    else:
+        key = role_or_key
+        current_name = name
+    return current_name or "Member"
+
+
+def normalize_member_role_defaults(db: MongoStore) -> None:
+    normalized_permissions = sorted(set(CORE_MEMBER_PERMISSIONS))
+    member_description = DEFAULT_ROLE_DEFINITIONS[2][2]
+    legacy_roles = db.find_many("roles", {"key": LEGACY_MEMBER_ROLE_KEY})
+    for legacy_role in legacy_roles:
+        member_role = db.find_one("roles", {"workspace_id": legacy_role.workspace_id, "key": MEMBER_ROLE_KEY})
+        if member_role and member_role.id != legacy_role.id:
+            for membership in db.find_many("workspace_members", {"workspace_id": legacy_role.workspace_id, "role_id": legacy_role.id}):
+                membership["role_id"] = member_role.id
+                membership["is_general_member"] = True
+                db.save("workspace_members", membership)
+            for invitation in db.find_many("invitations", {"workspace_id": legacy_role.workspace_id, "role_id": legacy_role.id}):
+                invitation["role_id"] = member_role.id
+                db.save("invitations", invitation)
+            for link in db.find_many("invite_links", {"workspace_id": legacy_role.workspace_id, "role_id": legacy_role.id}):
+                link["role_id"] = member_role.id
+                db.save("invite_links", link)
+            db.delete_one("roles", {"id": legacy_role.id, "workspace_id": legacy_role.workspace_id})
+            continue
+
+        legacy_role["key"] = MEMBER_ROLE_KEY
+        legacy_role["name"] = "Member"
+        legacy_role["description"] = member_description
+        legacy_role["permissions"] = normalized_permissions
+        legacy_role["is_system_role"] = False
+        db.save("roles", legacy_role)
+
+    for role in db.find_many("roles", {"key": MEMBER_ROLE_KEY}):
+        changed = False
+        if role.get("name") != "Member":
+            role["name"] = "Member"
+            changed = True
+        if role.get("description") != member_description:
+            role["description"] = member_description
+            changed = True
+        if sorted(role.get("permissions", [])) != normalized_permissions:
+            role["permissions"] = normalized_permissions
+            changed = True
+        if changed:
+            db.save("roles", role)
+
+    for member in db.find_many("members", {"role": "Core Member"}):
+        member["role"] = "Member"
+        db.save("members", member)
 
 
 def ensure_default_roles(db: MongoStore, workspace_id: int) -> dict[str, models.Role]:
     roles: dict[str, models.Role] = {}
     for key, name, description, permissions, is_system_role in DEFAULT_ROLE_DEFINITIONS:
         role = db.find_one("roles", {"workspace_id": workspace_id, "key": key})
+        if role is None and key == MEMBER_ROLE_KEY:
+            role = db.find_one("roles", {"workspace_id": workspace_id, "key": LEGACY_MEMBER_ROLE_KEY})
         if role is None:
             role = db.insert(
                 "roles",
@@ -100,8 +161,11 @@ def ensure_default_roles(db: MongoStore, workspace_id: int) -> dict[str, models.
                     "permissions": sorted(set(permissions)),
                 },
             )
-        elif role.get("is_system_role") or key == "core_member":
+        elif role.get("is_system_role") or key == MEMBER_ROLE_KEY:
             changed = False
+            if role.get("key") != key:
+                role["key"] = key
+                changed = True
             if role.name != name:
                 role["name"] = name
                 changed = True
@@ -115,6 +179,8 @@ def ensure_default_roles(db: MongoStore, workspace_id: int) -> dict[str, models.
             if changed:
                 db.save("roles", role)
         roles[key] = role
+    if MEMBER_ROLE_KEY in roles:
+        roles[LEGACY_MEMBER_ROLE_KEY] = roles[MEMBER_ROLE_KEY]
     return roles
 
 
