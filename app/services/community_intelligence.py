@@ -26,6 +26,8 @@ def analyze_message(
     text: str,
     provider: str,
     group_name: str | None = None,
+    workspace_type: str | None = None,
+    community_profile: dict[str, str] | None = None,
     message_type: str | None = None,
     attachment_name: str | None = None,
     recent_messages: list[str] | None = None,
@@ -41,11 +43,20 @@ def analyze_message(
             text=cleaned,
             provider=provider,
             group_name=group_name,
+            workspace_type=workspace_type,
+            community_profile=community_profile,
             message_type=message_type,
             attachment_name=attachment_name,
             recent_messages=contextual_messages,
         )
-    return _analyze_with_heuristics(cleaned, contextual_messages, message_type=message_type, attachment_name=attachment_name)
+    return _analyze_with_heuristics(
+        cleaned,
+        contextual_messages,
+        workspace_type=workspace_type,
+        community_profile=community_profile,
+        message_type=message_type,
+        attachment_name=attachment_name,
+    )
 
 
 def _analyze_with_anthropic(
@@ -53,6 +64,8 @@ def _analyze_with_anthropic(
     text: str,
     provider: str,
     group_name: str | None = None,
+    workspace_type: str | None = None,
+    community_profile: dict[str, str] | None = None,
     message_type: str | None = None,
     attachment_name: str | None = None,
     recent_messages: list[str] | None = None,
@@ -64,6 +77,12 @@ def _analyze_with_anthropic(
         raise CommunityIntelligenceError("ANTHROPIC_API_KEY is not configured")
 
     context_block = "\n".join(f"- {item}" for item in (recent_messages or [])[:6]).strip() or "- No prior context available"
+    profile_block = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted((community_profile or {}).items())
+        if value and str(value).strip()
+    ) or "None"
+    extraction_rules = _community_type_prompt_rules(workspace_type)
 
     prompt = (
         "You classify operational community chat messages and return only valid JSON.\n"
@@ -87,9 +106,12 @@ def _analyze_with_anthropic(
         "- For disbursement_request include amount, purpose, beneficiary.\n"
         "- If a message is an image or document, use that attachment context while still being conservative.\n"
         "- Receipt-like attachments or bank-alert screenshots should normally map to payment_receipt when supported by the text/context.\n"
+        f"{extraction_rules}\n"
         "- If the message is conversational or unclear, return artifact_type as other.\n\n"
         f"Provider: {provider}\n"
         f"Group: {group_name or 'Unknown'}\n"
+        f"Workspace type: {workspace_type or 'student_body'}\n"
+        f"Community profile: {profile_block}\n"
         f"Message type: {message_type or 'text'}\n"
         f"Attachment name: {attachment_name or 'None'}\n"
         "Recent message context from the same group:\n"
@@ -146,6 +168,8 @@ def _analyze_with_heuristics(
     text: str,
     recent_messages: list[str] | None = None,
     *,
+    workspace_type: str | None = None,
+    community_profile: dict[str, str] | None = None,
     message_type: str | None = None,
     attachment_name: str | None = None,
 ) -> CommunityArtifact:
@@ -153,22 +177,41 @@ def _analyze_with_heuristics(
     lowered = text.lower()
     contextual_lowered = f"{context_text.lower()} {lowered}".strip()
     attachment_hint = str(attachment_name or "").lower()
+    workspace_hint = str(workspace_type or "student_body").strip().lower()
+    profile_hint = " ".join(str(value).lower() for value in (community_profile or {}).values())
+    enriched_text = f"{profile_hint} {contextual_lowered}".strip()
     amount_match = re.search(r"(?:ngn|₦|n)\s*([\d,]+(?:\.\d{1,2})?)", lowered)
     amount = amount_match.group(1).replace(",", "") if amount_match else None
 
-    if any(keyword in contextual_lowered for keyword in ["job", "opportunity", "vacancy", "apply", "supplier needed", "needed urgently"]):
+    opportunity_keywords = {
+        "job", "opportunity", "vacancy", "apply", "supplier needed", "needed urgently",
+        "buyer", "client", "bulk order", "contract", "partnership", "vendor", "sponsorship", "volunteer",
+    }
+    if workspace_hint in {"cooperative", "market_association", "trade_group", "savings_circle"}:
+        opportunity_keywords.update({"stock", "dispatch", "supply", "delivery", "market day", "customer"})
+    if any(keyword in enriched_text for keyword in opportunity_keywords):
         return CommunityArtifact(
             artifact_type="opportunity",
             confidence=0.68 if recent_messages else 0.62,
             summary="opportunity lead",
-            extracted_payload={"title": text[:120], "amount": amount, "trade_tags": _keyword_tags(contextual_lowered)},
+            extracted_payload={"title": text[:120], "amount": amount, "trade_tags": _keyword_tags(enriched_text, workspace_hint)},
         )
-    if any(keyword in contextual_lowered for keyword in ["paid", "payment", "receipt", "transfer", "contribution sent", "dues sent"]):
+    payment_keywords = {"paid", "payment", "receipt", "transfer", "contribution sent", "dues sent"}
+    if workspace_hint in {"cooperative", "market_association", "trade_group", "savings_circle"}:
+        payment_keywords.update({"ajo", "thrift", "esusu", "repayment", "installment", "weekly contribution"})
+    if any(keyword in enriched_text for keyword in payment_keywords):
         return CommunityArtifact(
-            artifact_type="contribution_signal" if "contribution" in contextual_lowered or "dues" in contextual_lowered else "payment_receipt",
+            artifact_type="contribution_signal" if any(keyword in enriched_text for keyword in ["contribution", "dues", "ajo", "thrift", "esusu", "repayment"]) else "payment_receipt",
             confidence=0.66 if recent_messages else 0.58,
             summary="payment signal",
             extracted_payload={"amount": amount, "raw_excerpt": text[:160]},
+        )
+    if any(keyword in enriched_text for keyword in {"loan request", "send to", "disburse", "withdraw", "cash out", "vendor payment", "settle supplier"}):
+        return CommunityArtifact(
+            artifact_type="disbursement_request",
+            confidence=0.63 if recent_messages else 0.56,
+            summary="disbursement request",
+            extracted_payload={"amount": amount, "purpose": text[:120]},
         )
     if (message_type in {"image", "document"} and any(keyword in f"{attachment_hint} {contextual_lowered}" for keyword in ["receipt", "transfer", "alert", "payment", "bank"])) or (
         message_type in {"image", "document"} and amount
@@ -189,12 +232,37 @@ def _analyze_with_heuristics(
     return CommunityArtifact("other", 0.3, "general chat", {})
 
 
-def _keyword_tags(text: str) -> list[str]:
+def _keyword_tags(text: str, workspace_type: str | None = None) -> list[str]:
     tags = []
-    for candidate in ["tailor", "fashion", "food", "driver", "cleaning", "logistics", "teacher", "design", "sales"]:
+    candidates = ["tailor", "fashion", "food", "driver", "cleaning", "logistics", "teacher", "design", "sales"]
+    if workspace_type in {"cooperative", "market_association", "trade_group", "savings_circle"}:
+        candidates.extend(["wholesale", "retail", "fabric", "beauty", "catering", "delivery", "trading", "supply"])
+    if workspace_type == "student_body":
+        candidates.extend(["media", "ushering", "speaker", "partnership", "sponsorship", "volunteer"])
+    for candidate in candidates:
         if candidate in text:
             tags.append(candidate)
     return tags
+
+
+def _community_type_prompt_rules(workspace_type: str | None) -> str:
+    normalized = str(workspace_type or "student_body").strip().lower()
+    if normalized in {"cooperative", "market_association", "trade_group", "savings_circle"}:
+        return (
+            "- For cooperatives, market associations, trade groups, and savings circles: treat buyer leads, supplier requests, "
+            "bulk orders, stock requests, transport/logistics requests, thrift contributions, repayment signals, and vendor settlement requests as operationally important.\n"
+            "- Loan repayment and thrift/ajo/esusu updates usually map to contribution_signal or payment_receipt, not opportunity.\n"
+            "- Supplier sourcing, buyer leads, stock requests, and paid delivery/dispatch jobs usually map to opportunity."
+        )
+    if normalized == "student_body":
+        return (
+            "- For student or campus communities: treat volunteer requests, sponsorship leads, vendor sourcing, event staffing, partnership outreach, "
+            "and paid campus gigs as operationally important opportunities.\n"
+            "- Meeting reminders, turnout requests, and election/admin notices usually map to announcement unless they contain a concrete opportunity."
+        )
+    return (
+        "- For general community workspaces: prioritize concrete opportunities, verified inflow signals, announcements, and requests that imply money movement or member assignment."
+    )
 
 
 def _parse_json_object(value: str) -> dict:

@@ -233,6 +233,7 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
     existing = db.find_one("message_artifacts", {"workspace_id": message.workspace_id, "message_id": message.id})
     if existing:
         return existing
+    workspace = db.find_by_id("workspaces", message.workspace_id)
 
     recent_context_messages = [
         str(item.get("text") or "").strip()
@@ -255,6 +256,8 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
             text=message.text,
             provider=message.provider,
             group_name=group_name,
+            workspace_type=workspace.get("workspace_type") if workspace else None,
+            community_profile=workspace.get("community_profile") if workspace else None,
             message_type=message.message_type,
             attachment_name=str((message.get("raw_payload") or {}).get("attachment_name") or "").strip() or None,
             recent_messages=list(reversed(recent_context_messages)),

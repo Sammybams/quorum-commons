@@ -10,22 +10,22 @@ import { apiPost } from "@/lib/api";
 import { clearSession, readSession, saveSession, type QuorumSession, type QuorumWorkspace } from "@/lib/session";
 
 const navItems = [
-  { label: "Dashboard", icon: "dashboard", href: "dashboard" },
-  { label: "Members", icon: "group", href: "members" },
-  { label: "Events", icon: "event", href: "events" },
-  { label: "Meetings", icon: "groups_3", href: "meetings" },
-  { label: "Fundraising", icon: "payments", href: "campaigns" },
-  { label: "Dues", icon: "receipt_long", href: "dues" },
-  { label: "Budgets", icon: "account_balance", href: "budgets" },
-  { label: "Community Inbox", icon: "forum", href: "community-inbox" },
-  { label: "Opportunities", icon: "work", href: "opportunities" },
-  { label: "Financial Health", icon: "monitoring", href: "financial-health" },
-  { label: "Reports", icon: "analytics", href: "reports" },
-  { label: "Tasks", icon: "checklist", href: "tasks" },
-  { label: "Links", icon: "link", href: "links" },
-  { label: "Announcements", icon: "campaign", href: "announcements" },
-  { label: "Integrations", icon: "hub", href: "settings/integrations" },
-  { label: "Settings", icon: "settings", href: "settings/roles" },
+  { label: "Dashboard", icon: "dashboard", href: "dashboard", permission: "dashboard.view" },
+  { label: "Members", icon: "group", href: "members", permission: "members.view" },
+  { label: "Events", icon: "event", href: "events", permission: "events.view" },
+  { label: "Meetings", icon: "groups_3", href: "meetings", permission: "meetings.view" },
+  { label: "Fundraising", icon: "payments", href: "campaigns", permission: "campaigns.view" },
+  { label: "Dues", icon: "receipt_long", href: "dues", permission: "dues.view" },
+  { label: "Budgets", icon: "account_balance", href: "budgets", permission: "budgets.view" },
+  { label: "Community Inbox", icon: "forum", href: "community-inbox", permission: "integrations.manage" },
+  { label: "Opportunities", icon: "work", href: "opportunities", permission: "opportunities.view" },
+  { label: "Financial Health", icon: "monitoring", href: "financial-health", permission: "reports.view" },
+  { label: "Reports", icon: "analytics", href: "reports", permission: "reports.view" },
+  { label: "Tasks", icon: "checklist", href: "tasks", permission: "tasks.view" },
+  { label: "Links", icon: "link", href: "links", permission: "dashboard.view" },
+  { label: "Announcements", icon: "campaign", href: "announcements", permission: "announcements.view" },
+  { label: "Integrations", icon: "hub", href: "settings/integrations", permission: "integrations.manage" },
+  { label: "Settings", icon: "settings", href: "settings/roles", permission: "settings.view" },
 ];
 
 export default function WorkspaceLayout({
@@ -45,6 +45,9 @@ export default function WorkspaceLayout({
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const workspaceName = session?.workspace_name || params.workspaceSlug;
   const workspaceLabel = workspaceName.split("-").join(" ");
+  const currentWorkspaceSession = session?.workspaces?.find((item) => item.workspace_slug === params.workspaceSlug) || null;
+  const currentPermissions = currentWorkspaceSession?.permissions || [];
+  const visibleNavItems = navItems.filter((item) => !item.permission || currentPermissions.includes(item.permission));
   const prefetchTargets = [
     `${base}/dashboard`,
     `${base}/members`,
@@ -53,17 +56,9 @@ export default function WorkspaceLayout({
     `${base}/campaigns`,
     `${base}/dues`,
     `${base}/budgets`,
-    `${base}/community-inbox`,
-    `${base}/opportunities`,
-    `${base}/financial-health`,
-    `${base}/reports`,
-    `${base}/tasks`,
-    `${base}/links`,
-    `${base}/announcements`,
-    `${base}/settings/roles`,
-    `${base}/settings/workspace`,
-    `${base}/settings/integrations`,
-    `${base}/events/new`,
+    ...visibleNavItems.map((item) => `${base}/${item.href}`),
+    ...(currentPermissions.includes("settings.view") ? [`${base}/settings/workspace`] : []),
+    ...(currentPermissions.includes("events.manage") ? [`${base}/events/new`] : []),
   ];
 
   useEffect(() => {
@@ -157,7 +152,7 @@ export default function WorkspaceLayout({
         </Link>
 
         <nav className="nav-list" aria-label="Workspace">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const href = `${base}/${item.href}`;
             const section = item.href.split("/")[0];
             const isActive = pathname === href || pathname.startsWith(`${base}/${section}/`);
@@ -180,12 +175,14 @@ export default function WorkspaceLayout({
         </nav>
 
         <div className="side-nav-actions">
-          <Link href={`${base}/campaigns`} className="side-action primary" prefetch>
-            <span className="material-symbols-outlined" aria-hidden="true">
-              add
-            </span>
-            <span>New Campaign</span>
-          </Link>
+          {currentPermissions.includes("campaigns.manage") ? (
+            <Link href={`${base}/campaigns`} className="side-action primary" prefetch>
+              <span className="material-symbols-outlined" aria-hidden="true">
+                add
+              </span>
+              <span>New Campaign</span>
+            </Link>
+          ) : null}
           <button type="button" className="side-action" onClick={signOut}>
             <span className="material-symbols-outlined" aria-hidden="true">
               logout
@@ -278,18 +275,22 @@ export default function WorkspaceLayout({
                     </span>
                     Profile
                   </Link>
-                  <Link href={`${base}/settings/workspace`} prefetch>
-                    <span className="material-symbols-outlined" aria-hidden="true">
-                      settings
-                    </span>
-                    Settings
-                  </Link>
-                  <Link href={`${base}/settings/integrations`} prefetch>
-                    <span className="material-symbols-outlined" aria-hidden="true">
-                      hub
-                    </span>
-                    Connect Google
-                  </Link>
+                  {currentPermissions.includes("settings.view") ? (
+                    <Link href={`${base}/settings/workspace`} prefetch>
+                      <span className="material-symbols-outlined" aria-hidden="true">
+                        settings
+                      </span>
+                      Settings
+                    </Link>
+                  ) : null}
+                  {currentPermissions.includes("integrations.manage") ? (
+                    <Link href={`${base}/settings/integrations`} prefetch>
+                      <span className="material-symbols-outlined" aria-hidden="true">
+                        hub
+                      </span>
+                      Connect Google
+                    </Link>
+                  ) : null}
                   <button type="button" onClick={signOut}>
                     <span className="material-symbols-outlined" aria-hidden="true">
                       logout

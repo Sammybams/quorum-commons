@@ -8,14 +8,33 @@ from ..database import DESC, MongoStore
 
 def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str, Any]]:
     workspace_id = opportunity.workspace_id
+    existing_matches = db.find_many("opportunity_matches", {"workspace_id": workspace_id, "opportunity_id": opportunity.id})
+    existing_by_member = {int(item.member_id): item for item in existing_matches if item.get("member_id") is not None}
     db.delete_many("opportunity_matches", {"workspace_id": workspace_id, "opportunity_id": opportunity.id})
 
     members = db.find_many("workspace_members", {"workspace_id": workspace_id, "status": "active"})
     created: list[dict[str, Any]] = []
+    seen_member_ids: set[int] = set()
     for member in members:
         candidate = _score_member_for_opportunity(member=member, opportunity=opportunity, db=db)
+        existing = existing_by_member.get(int(member.id))
+        preserved_status = str(existing.get("status") or "recommended") if existing else "recommended"
+        preserved_note = existing.get("note") if existing else None
+        if not candidate and existing and preserved_status in {"interested", "contacted", "assigned"}:
+            candidate = {
+                "member_name": existing.get("member_name"),
+                "member_role": existing.get("member_role"),
+                "trade_category": existing.get("trade_category"),
+                "location": existing.get("location"),
+                "availability": existing.get("availability"),
+                "match_score": float(existing.get("match_score") or 0.4),
+                "fit_label": existing.get("fit_label") or "possible fit",
+                "matched_tags": existing.get("matched_tags") or [],
+                "reasons": existing.get("reasons") or ["This member is already in the opportunity workflow."],
+            }
         if not candidate:
             continue
+        seen_member_ids.add(int(member.id))
         created.append(
             db.insert(
                 "opportunity_matches",
@@ -23,7 +42,36 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
                     "workspace_id": workspace_id,
                     "opportunity_id": opportunity.id,
                     "member_id": member.id,
+                    "status": preserved_status,
+                    "note": preserved_note,
                     **candidate,
+                },
+            )
+        )
+
+    for member_id, existing in existing_by_member.items():
+        if member_id in seen_member_ids:
+            continue
+        if str(existing.get("status") or "").strip().lower() not in {"interested", "contacted", "assigned"}:
+            continue
+        created.append(
+            db.insert(
+                "opportunity_matches",
+                {
+                    "workspace_id": workspace_id,
+                    "opportunity_id": opportunity.id,
+                    "member_id": existing.member_id,
+                    "member_name": existing.get("member_name"),
+                    "member_role": existing.get("member_role"),
+                    "trade_category": existing.get("trade_category"),
+                    "location": existing.get("location"),
+                    "availability": existing.get("availability"),
+                    "match_score": float(existing.get("match_score") or 0.4),
+                    "fit_label": existing.get("fit_label") or "possible fit",
+                    "matched_tags": existing.get("matched_tags") or [],
+                    "reasons": existing.get("reasons") or ["This member remains in the opportunity workflow."],
+                    "status": existing.get("status") or "interested",
+                    "note": existing.get("note"),
                 },
             )
         )

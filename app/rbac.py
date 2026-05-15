@@ -80,7 +80,7 @@ CORE_MEMBER_PERMISSIONS = [
 DEFAULT_ROLE_DEFINITIONS = [
     ("owner", "Super Admin", "Primary workspace owner role with full access to every module and setting.", OWNER_PERMISSIONS, True),
     ("secretary", "Secretary", "System secretary role for meetings, minutes, and announcements.", SECRETARY_PERMISSIONS, True),
-    ("core_member", "Core Member", "General member role with personal read access.", CORE_MEMBER_PERMISSIONS, False),
+    ("core_member", "Member", "Default community member role with read access to the workspace dashboard, opportunities, financial health, and member-facing modules.", CORE_MEMBER_PERMISSIONS, False),
 ]
 
 

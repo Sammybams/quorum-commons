@@ -301,7 +301,7 @@ export default function HomePage() {
           <p className="eyebrow">Business model</p>
           <h2>Role-based tiered pricing. Designed for real community budgets.</h2>
           <p>
-            Every workspace has a Super Admin, Subteam Leads, and Core Members. Pricing scales with team size, not
+            Every workspace has a Super Admin, Subteam Leads, and Members. Pricing scales with team size, not
             with the wider membership.
           </p>
         </div>

@@ -85,6 +85,14 @@ export default function MembersClient({
     }
     return `${window.location.origin}/join/${token}`;
   }, [inviteLinks]);
+  const recommendedMemberRole = useMemo(
+    () => roles.find((item) => item.key === "core_member") || null,
+    [roles],
+  );
+  const selectedRole = useMemo(
+    () => roles.find((item) => item.id === roleId) || null,
+    [roleId, roles],
+  );
 
   async function copyInviteLink() {
     if (!inviteUrl) {
@@ -310,6 +318,9 @@ export default function MembersClient({
 
             <div className="invite-link-box">
               <span>{inviteUrl || "No bulk invite link yet. Generate one to copy a /join link."}</span>
+              <small className="muted-copy">
+                Bulk member access should usually use <strong>{recommendedMemberRole?.name || "Member"}</strong>. Use officer or custom roles only when the person should manage part of the workspace.
+              </small>
               <div className="invite-link-actions">
                 <Link href={`/${workspace.slug}/settings/integrations`} className="btn-ghost">
                   Connect Google
@@ -348,6 +359,11 @@ export default function MembersClient({
                     expand_more
                   </span>
                 </span>
+                <small className="muted-copy">
+                  {selectedRole?.key === "core_member"
+                    ? "Recommended default for regular members. They can sign in, view opportunities, and access the community dashboard."
+                    : "Use this only if the invitee should have a more specific officer or custom workspace role."}
+                </small>
               </label>
               <label>
                 Personal note

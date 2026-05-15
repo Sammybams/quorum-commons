@@ -2881,6 +2881,17 @@ p {
   margin-top: 10px;
 }
 
+.opportunity-member-note {
+  margin-top: 10px;
+}
+
+.opportunity-admin-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .bullet-list {
   display: grid;
   gap: 10px;

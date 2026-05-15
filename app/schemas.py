@@ -739,8 +739,10 @@ class OpportunityMatchOut(BaseModel):
     availability: str | None = None
     match_score: float
     fit_label: str
+    status: str = "recommended"
     matched_tags: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
+    note: str | None = None
     created_at: datetime
 
 
@@ -758,6 +760,7 @@ class OpportunityOut(BaseModel):
     status: str
     match_count: int = 0
     matches: list[OpportunityMatchOut] = Field(default_factory=list)
+    my_match: OpportunityMatchOut | None = None
     created_at: datetime
 
 
@@ -765,6 +768,16 @@ class OpportunityMatchRefreshResult(BaseModel):
     ok: bool = True
     message: str
     opportunity: OpportunityOut
+
+
+class OpportunityMemberResponseRequest(BaseModel):
+    status: str = Field(pattern="^(interested|passed)$")
+    note: str | None = Field(default=None, max_length=240)
+
+
+class OpportunityMatchStatusUpdateRequest(BaseModel):
+    status: str = Field(pattern="^(recommended|interested|contacted|assigned|passed)$")
+    note: str | None = Field(default=None, max_length=240)
 
 
 class FinancialHealthCategoryOut(BaseModel):
