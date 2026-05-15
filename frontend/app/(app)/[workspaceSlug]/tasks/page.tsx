@@ -1,6 +1,5 @@
 import { apiGet } from "@/lib/api";
-
-type Workspace = { id: number; slug: string; name: string };
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 type Task = {
   id: number;
   title: string;
@@ -11,7 +10,7 @@ type Task = {
 };
 
 export default async function TasksPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const tasks = await apiGet<Task[]>(`/workspaces/${workspace.id}/tasks`);
 
   return (

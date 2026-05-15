@@ -1,8 +1,7 @@
 import Link from "next/link";
 
 import { apiGet } from "@/lib/api";
-
-type Workspace = { id: number; slug: string; name: string };
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 type Meeting = {
   id: number;
   title: string;
@@ -12,7 +11,7 @@ type Meeting = {
 };
 
 export default async function MeetingsPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const meetings = await apiGet<Meeting[]>(`/workspaces/${workspace.id}/meetings`);
 
   return (

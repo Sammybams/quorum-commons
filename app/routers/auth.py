@@ -38,6 +38,7 @@ def _auth_response(db: MongoStore, workspace: models.Workspace, membership: mode
     hydrate_user(db, user)
     access_token, refresh_token = _issue_session_tokens(db, user.id, workspace.id, membership.id, role.key)
     return schemas.AuthLoginResponse(
+        workspace_id=workspace.id,
         workspace_slug=workspace.slug,
         workspace_name=workspace.name,
         member_id=membership.id,
@@ -53,6 +54,7 @@ def _auth_response(db: MongoStore, workspace: models.Workspace, membership: mode
 
 def _workspace_member_out(membership: models.WorkspaceMember) -> schemas.AuthMeWorkspace:
     return schemas.AuthMeWorkspace(
+        workspace_id=membership.workspace.id,
         workspace_slug=membership.workspace.slug,
         workspace_name=membership.workspace.name,
         member_id=membership.id,
@@ -279,6 +281,7 @@ def login(payload: schemas.AuthLoginRequest, db: MongoStore = Depends(get_db)):
 
     access_token, refresh_token = _issue_session_tokens(db, user.id, None, None, None)
     return schemas.AuthLoginResponse(
+        workspace_id=None,
         workspace_slug="",
         workspace_name="",
         member_id=0,
@@ -336,6 +339,7 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: MongoStore = Depends
         if workspace and membership and role:
             hydrate_user(db, user)
             return schemas.AuthLoginResponse(
+                workspace_id=workspace.id,
                 workspace_slug=workspace.slug,
                 workspace_name=workspace.name,
                 member_id=membership.id,
@@ -350,6 +354,7 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: MongoStore = Depends
 
     hydrate_user(db, user)
     return schemas.AuthLoginResponse(
+        workspace_id=None,
         workspace_slug="",
         workspace_name="",
         member_id=0,

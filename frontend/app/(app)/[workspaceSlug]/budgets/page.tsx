@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { API_BASE_URL, apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type Budget = {
@@ -34,7 +35,7 @@ export default function BudgetsPage({ params }: { params: { workspaceSlug: strin
   useEffect(() => {
     async function load() {
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
         const loadedBudgets = await apiGet<Budget[]>(`/workspaces/${found.id}/budgets`);
         setBudgets(loadedBudgets);

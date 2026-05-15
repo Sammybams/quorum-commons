@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 
@@ -24,7 +25,7 @@ export default function NewMeetingPage({ params }: { params: { workspaceSlug: st
     setLoading(true);
     setError(null);
     try {
-      const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+      const workspace = await resolveWorkspace(params.workspaceSlug);
       const meeting = await apiPost<{ id: number }, { title: string; scheduled_for: string; agenda: string[]; meeting_type: string }>(
         `/workspaces/${workspace.id}/meetings`,
         {

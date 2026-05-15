@@ -1,7 +1,6 @@
 import { apiGet } from "@/lib/api";
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 import DuesClient from "./dues-client";
-
-type Workspace = { id: number; slug: string; name: string };
 type DuesCycle = { id: number; workspace_id: number; name: string; amount: number; deadline?: string | null };
 type DuesPayment = {
   id: number;
@@ -23,7 +22,7 @@ type DuesPayment = {
 type Member = { id: number; full_name: string; email?: string | null };
 
 export default async function DuesPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const [cycles, payments, members] = await Promise.all([
     apiGet<DuesCycle[]>(`/workspaces/${workspace.id}/dues-cycles`),
     apiGet<DuesPayment[]>(`/workspaces/${workspace.id}/dues-payments`),

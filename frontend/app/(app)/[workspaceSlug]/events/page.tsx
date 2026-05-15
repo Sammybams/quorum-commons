@@ -1,12 +1,11 @@
 import Link from "next/link";
 
 import { apiGet } from "@/lib/api";
-
-type Workspace = { id: number; slug: string; name: string };
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 type Event = { id: number; title: string; event_type: string; starts_at: string; venue?: string; rsvp_count: number };
 
 export default async function EventsPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const events = await apiGet<Event[]>(`/workspaces/${workspace.id}/events`);
 
   return (

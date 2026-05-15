@@ -1,8 +1,7 @@
 import { apiGet } from "@/lib/api";
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 
 import MembersClient from "./members-client";
-
-type Workspace = { id: number; slug: string; name: string };
 type Member = {
   id: number;
   full_name: string;
@@ -18,7 +17,7 @@ type Member = {
 };
 
 export default async function MembersPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const members = await apiGet<Member[]>(`/workspaces/${workspace.id}/members`);
 
   return <MembersClient workspace={workspace} initialMembers={members} />;

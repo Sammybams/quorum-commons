@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type ChannelMessage = {
@@ -34,34 +35,88 @@ type MessageArtifact = {
   review_note?: string | null;
   created_at: string;
 };
+type CommunityHighlight = {
+  message_id: number;
+  workspace_id: number;
+  channel_id: number;
+  provider: string;
+  external_group_id: string;
+  group_name?: string | null;
+  sender_name?: string | null;
+  sender_handle?: string | null;
+  message_type: string;
+  text: string;
+  received_at: string;
+  artifact_id: number;
+  artifact_type: string;
+  confidence: number;
+  summary?: string | null;
+  extracted_payload: Record<string, unknown>;
+  status: string;
+  reviewed_at?: string | null;
+  reviewed_by_user_id?: number | null;
+  review_note?: string | null;
+  created_at: string;
+};
+type CommunityInboxFeed = {
+  highlights: CommunityHighlight[];
+  review_queue: CommunityHighlight[];
+  refreshed_at: string;
+};
+
+const HIGHLIGHTS_CACHE_PREFIX = "community-inbox-highlights:";
+
+function highlightsCacheKey(workspaceSlug: string) {
+  return `${HIGHLIGHTS_CACHE_PREFIX}${workspaceSlug}`;
+}
+
+function readCachedFeed(workspaceSlug: string): CommunityInboxFeed | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(highlightsCacheKey(workspaceSlug));
+    return raw ? (JSON.parse(raw) as CommunityInboxFeed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedFeed(workspaceSlug: string, feed: CommunityInboxFeed) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(highlightsCacheKey(workspaceSlug), JSON.stringify(feed));
+  } catch {
+    // Ignore storage failures and still show the live response.
+  }
+}
 
 export default function CommunityInboxPage({ params }: { params: { workspaceSlug: string } }) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [messages, setMessages] = useState<ChannelMessage[]>([]);
-  const [artifacts, setArtifacts] = useState<MessageArtifact[]>([]);
-  const [reviewQueue, setReviewQueue] = useState<MessageArtifact[]>([]);
+  const [messages, setMessages] = useState<ChannelMessage[] | null>(null);
+  const [highlights, setHighlights] = useState<CommunityHighlight[]>([]);
+  const [reviewQueue, setReviewQueue] = useState<CommunityHighlight[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analyzingId, setAnalyzingId] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [reviewingArtifactId, setReviewingArtifactId] = useState<number | null>(null);
+  const [loadingAllMessages, setLoadingAllMessages] = useState(false);
   const [viewFilter, setViewFilter] = useState<"highlights" | "all" | "whatsapp" | "telegram" | "needs_review">("highlights");
 
-  async function loadInbox(workspaceId: number, options?: { background?: boolean }) {
+  async function loadFeed(workspaceId: number, options?: { background?: boolean }) {
     if (!options?.background) {
       setLoading(true);
     } else {
       setRefreshing(true);
     }
     try {
-      const [loadedMessages, loadedArtifacts, loadedReviewQueue] = await Promise.all([
-        apiGet<ChannelMessage[]>(`/workspaces/${workspaceId}/community-channels/messages`),
-        apiGet<MessageArtifact[]>(`/workspaces/${workspaceId}/community-channels/artifacts`),
-        apiGet<MessageArtifact[]>(`/workspaces/${workspaceId}/community-channels/review-queue`),
-      ]);
-      setMessages(loadedMessages);
-      setArtifacts(loadedArtifacts);
-      setReviewQueue(loadedReviewQueue);
+      const feed = await apiGet<CommunityInboxFeed>(`/workspaces/${workspaceId}/community-channels/feed`);
+      setHighlights(feed.highlights);
+      setReviewQueue(feed.review_queue);
+      writeCachedFeed(params.workspaceSlug, feed);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load community inbox.");
@@ -71,12 +126,33 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     }
   }
 
+  async function loadAllMessages(workspaceId: number, options?: { background?: boolean }) {
+    if (!options?.background) {
+      setLoadingAllMessages(true);
+    }
+    try {
+      const loadedMessages = await apiGet<ChannelMessage[]>(`/workspaces/${workspaceId}/community-channels/messages`);
+      setMessages(loadedMessages);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load recent message window.");
+    } finally {
+      setLoadingAllMessages(false);
+    }
+  }
+
   useEffect(() => {
     async function load() {
+      const cachedFeed = readCachedFeed(params.workspaceSlug);
+      if (cachedFeed) {
+        setHighlights(cachedFeed.highlights);
+        setReviewQueue(cachedFeed.review_queue);
+        setLoading(false);
+      }
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
-        await loadInbox(found.id);
+        await loadFeed(found.id);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load community inbox.");
       }
@@ -90,10 +166,17 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
       return;
     }
     const timer = window.setInterval(() => {
-      loadInbox(workspace.id, { background: true }).catch(() => {});
+      loadFeed(workspace.id, { background: true }).catch(() => {});
     }, 12000);
     return () => window.clearInterval(timer);
   }, [workspace]);
+
+  useEffect(() => {
+    if (!workspace || viewFilter !== "all" || messages) {
+      return;
+    }
+    loadAllMessages(workspace.id).catch(() => {});
+  }, [messages, viewFilter, workspace]);
 
   async function analyzeMessage(messageId: number) {
     if (!workspace) {
@@ -106,15 +189,21 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
         `/workspaces/${workspace.id}/community-channels/messages/${messageId}/analyze`,
         {},
       );
-      setArtifacts((current) => [artifact, ...current.filter((item) => item.message_id !== messageId)]);
-      if (artifact.status === "needs_review" || artifact.status === "analysis_failed") {
-        setReviewQueue((current) => [artifact, ...current.filter((item) => item.id !== artifact.id)]);
-      }
       setMessages((current) =>
-        current.map((message) =>
+        current
+          ? current.map((message) =>
           message.id === messageId ? { ...message, artifact_count: Math.max(message.artifact_count, 1) } : message,
-        ),
+            )
+          : null,
       );
+      await loadFeed(workspace.id, { background: true });
+      if (viewFilter === "all") {
+        setMessages((current) =>
+          current?.map((message) =>
+            message.id === messageId ? { ...message, artifact_count: Math.max(message.artifact_count, 1) } : message,
+          ) || null,
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to analyze message.");
     } finally {
@@ -133,8 +222,7 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
         `/workspaces/${workspace.id}/community-channels/artifacts/${artifactId}/${action}`,
         {},
       );
-      setArtifacts((current) => [artifact, ...current.filter((item) => item.id !== artifact.id)]);
-      setReviewQueue((current) => current.filter((item) => item.id !== artifact.id));
+      await loadFeed(workspace.id, { background: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : `Unable to ${action} artifact.`);
     } finally {
@@ -142,39 +230,37 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     }
   }
 
-  const artifactByMessage = new Map(artifacts.map((artifact) => [artifact.message_id, artifact]));
-  const messageById = new Map(messages.map((message) => [message.id, message]));
-  const filteredMessages = useMemo(() => {
+  const artifactByMessage = new Map(highlights.map((highlight) => [highlight.message_id, highlight]));
+  const filteredHighlights = useMemo(() => {
     if (viewFilter === "highlights") {
-      return messages.filter((message) => {
-        const artifact = artifactByMessage.get(message.id);
-        return Boolean(artifact && artifact.status !== "ignored");
-      });
-    }
-    if (viewFilter === "all") {
-      return messages;
+      return highlights;
     }
     if (viewFilter === "needs_review") {
-      return messages.filter((message) => {
-        const artifact = artifactByMessage.get(message.id);
-        return artifact?.status === "needs_review" || artifact?.status === "analysis_failed";
-      });
+      return reviewQueue;
     }
-    return messages.filter((message) => message.provider === viewFilter);
-  }, [artifactByMessage, messages, viewFilter]);
+    if (viewFilter === "whatsapp" || viewFilter === "telegram") {
+      return highlights.filter((highlight) => highlight.provider === viewFilter);
+    }
+    return highlights;
+  }, [highlights, reviewQueue, viewFilter]);
+  const visibleMessages = viewFilter === "all" ? messages || [] : filteredHighlights;
   const highlightedGroupsCount = useMemo(
-    () => new Set(filteredMessages.map((message) => message.external_group_id)).size,
-    [filteredMessages],
+    () => new Set(visibleMessages.map((message) => message.external_group_id)).size,
+    [visibleMessages],
   );
   const highlightedGroups = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const message of filteredMessages) {
+    for (const message of visibleMessages) {
       if (!seen.has(message.external_group_id)) {
         seen.set(message.external_group_id, message.group_name || message.external_group_id);
       }
     }
     return Array.from(seen.values());
-  }, [filteredMessages]);
+  }, [visibleMessages]);
+  const todaysHighlightCount = useMemo(() => {
+    const today = new Date().toDateString();
+    return highlights.filter((highlight) => new Date(highlight.received_at).toDateString() === today).length;
+  }, [highlights]);
 
   function formatTime(value: string) {
     try {
@@ -211,7 +297,14 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
         <button
           type="button"
           className="btn-secondary"
-          onClick={() => (workspace ? loadInbox(workspace.id) : Promise.resolve())}
+          onClick={() =>
+            workspace
+              ? Promise.all([
+                  loadFeed(workspace.id),
+                  viewFilter === "all" ? loadAllMessages(workspace.id, { background: true }) : Promise.resolve(),
+                ])
+              : Promise.resolve()
+          }
           disabled={loading || refreshing || !workspace}
         >
           {loading || refreshing ? "Refreshing..." : "Refresh inbox"}
@@ -222,27 +315,24 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
 
       <section className="metrics-grid">
         <article className="metric-card primary">
-          <small>Messages</small>
-          <strong>{messages.length}</strong>
-          <p>Recent synced group messages</p>
-        </article>
-        <article className="metric-card">
-          <small>Artifacts</small>
-          <strong>{artifacts.length}</strong>
-          <p>Extracted structured records</p>
-        </article>
-        <article className="metric-card">
           <small>Highlights</small>
-          <strong>{messages.filter((message) => {
-            const artifact = artifactByMessage.get(message.id);
-            return Boolean(artifact && artifact.status !== "ignored");
-          }).length}</strong>
-          <p>Important message signals found</p>
+          <strong>{highlights.length}</strong>
+          <p>Saved actionable signals ready to read</p>
         </article>
         <article className="metric-card">
           <small>Needs review</small>
           <strong>{reviewQueue.length}</strong>
-          <p>Queued for human approval</p>
+          <p>Queued for quick human approval</p>
+        </article>
+        <article className="metric-card">
+          <small>Groups covered</small>
+          <strong>{new Set(highlights.map((highlight) => highlight.external_group_id)).size}</strong>
+          <p>Synced groups with meaningful extracted items</p>
+        </article>
+        <article className="metric-card">
+          <small>Today</small>
+          <strong>{todaysHighlightCount}</strong>
+          <p>Highlights analyzed so far today</p>
         </article>
       </section>
 
@@ -251,9 +341,9 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
           <div className="card-head">
             <div>
               <h2>Live log</h2>
-              <p className="muted-copy">Scroll through tagged highlights from {highlightedGroupsCount || 0} synced group{highlightedGroupsCount === 1 ? "" : "s"}.</p>
+              <p className="muted-copy">Recent meaningful signals stay visible here while Quorum keeps updating them in the background.</p>
             </div>
-            <span className="status-pill">{loading ? "Loading" : `${filteredMessages.length} shown`}</span>
+            <span className="status-pill">{loading ? "Loading" : `${visibleMessages.length} shown`}</span>
           </div>
 
           {highlightedGroups.length ? (
@@ -288,58 +378,90 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
             </button>
           </div>
 
-          {filteredMessages.length === 0 ? (
+          {visibleMessages.length === 0 ? (
             <div className="empty-block">
               <span className="material-symbols-outlined" aria-hidden="true">
                 forum
               </span>
-              <h3>No synced messages yet</h3>
-              <p>Enable a Telegram or WhatsApp group in Integrations and refresh this inbox after syncing messages.</p>
+              <h3>{viewFilter === "all" && loadingAllMessages ? "Loading recent message window" : "No synced messages yet"}</h3>
+              <p>
+                {viewFilter === "all"
+                  ? "Quorum loads the broader raw message window only when you ask for it."
+                  : "Enable a Telegram or WhatsApp group in Integrations and refresh this inbox after syncing messages."}
+              </p>
             </div>
           ) : (
             <div className="community-feed-list">
-              {filteredMessages.map((message) => {
-                const artifact = artifactByMessage.get(message.id);
-                return (
-                  <article key={message.id} className="community-log-item">
-                    <div className="community-log-meta">
-                      <div className="community-log-source">
-                        <span className={`source-pill ${message.provider}`}>{message.provider}</span>
-                      </div>
-                      <small>{formatTime(message.received_at)}</small>
-                    </div>
+              {viewFilter === "all"
+                ? (messages || []).map((message) => {
+                    const artifact = artifactByMessage.get(message.id);
+                    return (
+                      <article key={message.id} className="community-log-item">
+                        <div className="community-log-meta">
+                          <div className="community-log-source">
+                            <span className={`source-pill ${message.provider}`}>{message.provider}</span>
+                          </div>
+                          <small>{formatTime(message.received_at)}</small>
+                        </div>
 
-                    <div className="community-log-body">
-                      <div className="community-log-sender">{message.sender_name || message.sender_handle || "Unknown sender"}</div>
-                      <p>{message.text}</p>
-                    </div>
+                        <div className="community-log-body">
+                          <div className="community-log-sender">{message.sender_name || message.sender_handle || "Unknown sender"}</div>
+                          <p>{message.text}</p>
+                        </div>
 
-                    <div className="community-log-footer">
-                      {artifact ? (
-                        <div className="artifact-inline">
-                          <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
-                          {artifact.status !== "ready" && artifact.status !== "approved" ? (
-                            <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
+                        <div className="community-log-footer">
+                          {artifact ? (
+                            <div className="artifact-inline">
+                              <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
+                              {artifact.status !== "ready" && artifact.status !== "approved" ? (
+                                <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="muted-copy">Awaiting analysis</span>
+                          )}
+
+                          {!artifact ? (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              disabled={analyzingId === message.id}
+                              onClick={() => analyzeMessage(message.id)}
+                            >
+                              {analyzingId === message.id ? "Analyzing..." : "Analyze"}
+                            </button>
                           ) : null}
                         </div>
-                      ) : (
-                        <span className="muted-copy">Awaiting analysis</span>
-                      )}
+                      </article>
+                    );
+                  })
+                : filteredHighlights.map((message) => {
+                    const artifact = message;
+                    return (
+                      <article key={message.artifact_id} className="community-log-item">
+                        <div className="community-log-meta">
+                          <div className="community-log-source">
+                            <span className={`source-pill ${message.provider}`}>{message.provider}</span>
+                          </div>
+                          <small>{formatTime(message.received_at)}</small>
+                        </div>
 
-                      {!artifact ? (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          disabled={analyzingId === message.id}
-                          onClick={() => analyzeMessage(message.id)}
-                        >
-                          {analyzingId === message.id ? "Analyzing..." : "Analyze"}
-                        </button>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })}
+                        <div className="community-log-body">
+                          <div className="community-log-sender">{message.sender_name || message.sender_handle || "Unknown sender"}</div>
+                          <p>{message.text}</p>
+                        </div>
+
+                        <div className="community-log-footer">
+                          <div className="artifact-inline">
+                            <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
+                            {artifact.status !== "ready" && artifact.status !== "approved" ? (
+                              <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
             </div>
           )}
         </article>
@@ -357,14 +479,13 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
           ) : (
             <div className="review-queue-list">
               {reviewQueue.map((artifact) => {
-                const message = messageById.get(artifact.message_id);
                 return (
-                  <article key={artifact.id} className="review-queue-item">
+                  <article key={artifact.artifact_id} className="review-queue-item">
                     <div className="review-queue-top">
                       <span className={`status-pill ${artifactTone(artifact.status)}`}>{humanizeArtifactType(artifact.artifact_type)}</span>
                       <small>{Math.round(artifact.confidence * 100)}%</small>
                     </div>
-                    <p>{message?.text || "Message unavailable in current inbox window."}</p>
+                    <p>{artifact.text || "Message unavailable in current inbox window."}</p>
                     <small className="muted-copy">
                       {artifact.status === "analysis_failed" ? "AI analysis failed" : "Confidence below auto-approve threshold"}
                     </small>
@@ -372,16 +493,16 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
                       <button
                         type="button"
                         className="btn-primary"
-                        disabled={reviewingArtifactId === artifact.id}
-                        onClick={() => reviewArtifact(artifact.id, "approve")}
+                        disabled={reviewingArtifactId === artifact.artifact_id}
+                        onClick={() => reviewArtifact(artifact.artifact_id, "approve")}
                       >
-                        {reviewingArtifactId === artifact.id ? "Working..." : "Approve"}
+                        {reviewingArtifactId === artifact.artifact_id ? "Working..." : "Approve"}
                       </button>
                       <button
                         type="button"
                         className="btn-secondary"
-                        disabled={reviewingArtifactId === artifact.id}
-                        onClick={() => reviewArtifact(artifact.id, "reject")}
+                        disabled={reviewingArtifactId === artifact.artifact_id}
+                        onClick={() => reviewArtifact(artifact.artifact_id, "reject")}
                       >
                         Reject
                       </button>

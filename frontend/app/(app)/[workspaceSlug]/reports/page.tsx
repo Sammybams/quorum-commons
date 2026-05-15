@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 
@@ -114,7 +115,7 @@ export default function ReportsPage({ params }: { params: { workspaceSlug: strin
   useEffect(() => {
     async function load() {
       try {
-        const foundWorkspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const foundWorkspace = await resolveWorkspace(params.workspaceSlug);
         const foundReports = await apiGet<ReportSummary[]>(`/workspaces/${foundWorkspace.id}/reports`);
         setWorkspace(foundWorkspace);
         setReports(foundReports);

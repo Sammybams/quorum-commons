@@ -1,11 +1,10 @@
 import { apiGet } from "@/lib/api";
 import type { ShortLink } from "@/lib/api/links";
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 import LinksClient from "./LinksClient";
 
-type Workspace = { id: number; slug: string; name: string };
-
 export default async function LinksPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const links = await apiGet<ShortLink[]>(`/workspaces/${workspace.id}/links`);
   const activeCount = links.filter((link) => link.is_active).length;
   const totalClicks = links.reduce((sum, link) => sum + link.click_count, 0);

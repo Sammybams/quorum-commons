@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type HealthCategory = {
@@ -39,7 +40,7 @@ export default function FinancialHealthPage({ params }: { params: { workspaceSlu
   const [error, setError] = useState<string | null>(null);
 
   async function loadSnapshot(slug: string) {
-    const foundWorkspace = await apiGet<Workspace>(`/workspaces/slug/${slug}`);
+    const foundWorkspace = await resolveWorkspace(slug);
     const foundSnapshot = await apiGet<HealthSnapshot>(`/workspaces/${foundWorkspace.id}/financial-health`);
     setWorkspace(foundWorkspace);
     setSnapshot(foundSnapshot);

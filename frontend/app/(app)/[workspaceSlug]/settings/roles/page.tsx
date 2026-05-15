@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { apiGet, apiPatch, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type Role = {
@@ -40,7 +41,7 @@ export default function RolesPage({ params }: { params: { workspaceSlug: string 
   useEffect(() => {
     async function load() {
       try {
-        const foundWorkspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const foundWorkspace = await resolveWorkspace(params.workspaceSlug);
         const foundRoles = await apiGet<Role[]>(`/workspaces/${foundWorkspace.id}/roles`);
         setWorkspace(foundWorkspace);
         setRoles(foundRoles);

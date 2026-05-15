@@ -119,6 +119,7 @@ export default function WorkspaceLayout({
     }
     const nextSession: QuorumSession = {
       ...session,
+      workspace_id: workspace.workspace_id,
       workspace_slug: workspace.workspace_slug,
       workspace_name: workspace.workspace_name,
       member_id: workspace.member_id,

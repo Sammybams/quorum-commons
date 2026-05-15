@@ -384,6 +384,40 @@ def _artifact_out(artifact) -> schemas.MessageArtifactOut:
     )
 
 
+def _highlight_out(message, artifact, *, group_name: str | None = None) -> schemas.CommunityHighlightOut:
+    return schemas.CommunityHighlightOut(
+        message_id=message.id,
+        workspace_id=message.workspace_id,
+        channel_id=message.channel_id,
+        provider=message.provider,
+        external_group_id=message.external_group_id,
+        group_name=group_name,
+        sender_name=message.get("sender_name"),
+        sender_handle=message.get("sender_handle"),
+        message_type=message.message_type,
+        text=message.text,
+        received_at=message.received_at,
+        artifact_id=artifact.id,
+        artifact_type=artifact.artifact_type,
+        confidence=float(artifact.get("confidence") or 0),
+        summary=artifact.get("summary"),
+        extracted_payload=artifact.get("extracted_payload") or {},
+        status=artifact.get("status") or "ready",
+        reviewed_at=artifact.get("reviewed_at"),
+        reviewed_by_user_id=artifact.get("reviewed_by_user_id"),
+        review_note=artifact.get("review_note"),
+        created_at=artifact.created_at,
+    )
+
+
+def _should_include_highlight(artifact) -> bool:
+    if artifact.status in {"ignored", "rejected"}:
+        return False
+    if artifact.status in {"needs_review", "analysis_failed"}:
+        return True
+    return artifact.artifact_type != "other"
+
+
 def _refresh_channel_counts(db: MongoStore, channel):
     discovered = db.count("channel_group_links", {"workspace_id": channel.workspace_id, "channel_id": channel.id})
     selected = db.count(
@@ -998,6 +1032,46 @@ def list_message_artifacts(
 ):
     artifacts = db.find_many("message_artifacts", {"workspace_id": workspace_id}, sort=[("created_at", DESC)], limit=100)
     return [_artifact_out(artifact) for artifact in artifacts]
+
+
+@router.get("/feed", response_model=schemas.CommunityInboxFeedOut)
+def get_community_inbox_feed(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    artifacts = db.find_many("message_artifacts", {"workspace_id": workspace_id}, sort=[("created_at", DESC)], limit=240)
+    highlights: list[schemas.CommunityHighlightOut] = []
+    review_queue: list[schemas.CommunityHighlightOut] = []
+    seen_highlight_messages: set[int] = set()
+    seen_review_messages: set[int] = set()
+
+    for artifact in artifacts:
+        if not _should_include_highlight(artifact):
+            continue
+        message = db.find_one("channel_messages", {"workspace_id": workspace_id, "id": artifact.message_id})
+        if not message:
+            continue
+        group = db.find_by_id("channel_group_links", message.get("group_link_id"))
+        highlight = _highlight_out(message, artifact, group_name=group.group_name if group else None)
+        if highlight.message_id not in seen_highlight_messages and len(highlights) < 80:
+            highlights.append(highlight)
+            seen_highlight_messages.add(highlight.message_id)
+        if (
+            artifact.status in {"needs_review", "analysis_failed"}
+            and highlight.message_id not in seen_review_messages
+            and len(review_queue) < 40
+        ):
+            review_queue.append(highlight)
+            seen_review_messages.add(highlight.message_id)
+        if len(highlights) >= 80 and len(review_queue) >= 40:
+            break
+
+    return schemas.CommunityInboxFeedOut(
+        highlights=highlights,
+        review_queue=review_queue,
+        refreshed_at=datetime.utcnow(),
+    )
 
 
 @router.get("/review-queue", response_model=list[schemas.MessageArtifactOut])

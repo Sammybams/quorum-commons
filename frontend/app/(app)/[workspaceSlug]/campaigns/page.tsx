@@ -1,7 +1,6 @@
 import { apiGet } from "@/lib/api";
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 import CampaignsClient from "./campaigns-client";
-
-type Workspace = { id: number; slug: string; name: string };
 type Campaign = {
   id: number;
   workspace_id: number;
@@ -44,7 +43,7 @@ type CampaignDetail = Campaign & {
 };
 
 export default async function CampaignsPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const campaigns = await apiGet<Campaign[]>(`/workspaces/${workspace.id}/campaigns`);
   const selected = campaigns.find((item) => item.status === "active") || campaigns[0] || null;
   const detail = selected

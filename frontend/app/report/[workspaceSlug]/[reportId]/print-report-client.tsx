@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import BrandWordmark from "@/components/brand-wordmark";
 import ThemeToggle from "@/components/theme-toggle";
 import { apiGet } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 
@@ -79,7 +80,7 @@ export default function PrintReportClient({
   useEffect(() => {
     async function load() {
       try {
-        const foundWorkspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const foundWorkspace = await resolveWorkspace(params.workspaceSlug);
         const foundReport = await apiGet<ReportDetail>(`/workspaces/${foundWorkspace.id}/reports/${params.reportId}`);
         setWorkspace(foundWorkspace);
         setReport(foundReport);

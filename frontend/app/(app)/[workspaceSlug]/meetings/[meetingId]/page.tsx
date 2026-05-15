@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type Integration = { provider: string; status: string; configured: boolean };
@@ -107,7 +108,7 @@ export default function MeetingDetailPage({ params }: { params: { workspaceSlug:
   useEffect(() => {
     async function load() {
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
         const [meetingDetail, integrations] = await Promise.all([
           apiGet<MeetingDetail>(`/workspaces/${found.id}/meetings/${params.meetingId}`),

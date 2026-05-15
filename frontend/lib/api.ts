@@ -1,13 +1,41 @@
 import { clearSession, readSession, saveSession, type QuorumSession } from "./session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
+const clientGetCache = new Map<string, { expires_at: number; data: unknown }>();
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetchWithRefresh(`${API_BASE_URL}${path}`, { cache: "no-store", headers: authHeaders() });
+type ApiGetOptions = {
+  cachePolicy?: RequestCache;
+  revalidateSeconds?: number;
+  clientTtlMs?: number;
+};
+
+export async function apiGet<T>(path: string, options: ApiGetOptions = {}): Promise<T> {
+  const cacheKey = buildClientCacheKey(path);
+  if (typeof window !== "undefined" && options.clientTtlMs && cacheKey) {
+    const cached = clientGetCache.get(cacheKey);
+    if (cached && cached.expires_at > Date.now()) {
+      return cached.data as T;
+    }
+  }
+
+  const init: RequestInit & { next?: { revalidate: number } } = {
+    headers: authHeaders(),
+  };
+  if (typeof window === "undefined") {
+    init.next = { revalidate: options.revalidateSeconds ?? 30 };
+  } else {
+    init.cache = options.cachePolicy ?? "default";
+  }
+
+  const res = await fetchWithRefresh(`${API_BASE_URL}${path}`, init);
   if (!res.ok) {
     throw new Error(await readError(res));
   }
-  return res.json() as Promise<T>;
+  const data = (await res.json()) as T;
+  if (typeof window !== "undefined" && options.clientTtlMs && cacheKey) {
+    clientGetCache.set(cacheKey, { expires_at: Date.now() + options.clientTtlMs, data });
+  }
+  return data;
 }
 
 export async function apiPost<TResponse, TPayload>(path: string, payload: TPayload): Promise<TResponse> {
@@ -132,6 +160,14 @@ function authHeaders(): HeadersInit {
   } catch {
     return {};
   }
+}
+
+function buildClientCacheKey(path: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const token = readSession()?.access_token || "anon";
+  return `${token}:${path}`;
 }
 
 export { API_BASE_URL };

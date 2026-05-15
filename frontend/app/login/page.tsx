@@ -66,6 +66,7 @@ export default function LoginPage() {
       if (preferred && preferred.workspace_slug === lastWorkspaceSlug) {
         const session: QuorumSession = {
           ...result,
+          workspace_id: preferred.workspace_id,
           workspace_slug: preferred.workspace_slug,
           workspace_name: preferred.workspace_name,
           member_id: preferred.member_id,
@@ -106,6 +107,7 @@ export default function LoginPage() {
     }
     const session: QuorumSession = {
       ...pendingSession,
+      workspace_id: workspace.workspace_id,
       workspace_slug: workspace.workspace_slug,
       workspace_name: workspace.workspace_name,
       member_id: workspace.member_id,

@@ -5,6 +5,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type Integration = {
@@ -81,7 +82,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   useEffect(() => {
     async function load() {
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
         const [integrations, loadedChannels, telegramSetupStatus] = await Promise.all([
           apiGet<Integration[]>(`/workspaces/${found.id}/integrations`),

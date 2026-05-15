@@ -1,35 +1,31 @@
-export default function WorkspaceLoading() {
+export default function WorkspaceRouteLoading() {
   return (
     <section className="page-stack">
       <header className="page-head">
         <p className="eyebrow">Loading</p>
-        <h1>Opening workspace section...</h1>
-        <p>Your next view is being prepared.</p>
+        <h1>Opening workspace</h1>
+        <p>Fetching the latest workspace data.</p>
       </header>
-
       <section className="metrics-grid">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <article key={index} className="metric-card skeleton-card">
-            <div className="skeleton-line short" />
-            <div className="skeleton-line medium" />
-            <div className="skeleton-line long" />
-          </article>
-        ))}
-      </section>
-
-      <section className="content-grid">
-        <article className="panel-card skeleton-panel">
-          <div className="skeleton-line short" />
-          <div className="skeleton-line medium" />
-          <div className="skeleton-line long" />
-          <div className="skeleton-line long" />
+        <article className="metric-card">
+          <small>Loading</small>
+          <strong>...</strong>
+          <p>Please wait</p>
         </article>
-        <article className="panel-card skeleton-panel">
-          <div className="skeleton-line short" />
-          <div className="skeleton-line medium" />
-          <div className="skeleton-line long" />
+        <article className="metric-card">
+          <small>Loading</small>
+          <strong>...</strong>
+          <p>Please wait</p>
+        </article>
+        <article className="metric-card">
+          <small>Loading</small>
+          <strong>...</strong>
+          <p>Please wait</p>
         </article>
       </section>
+      <article className="panel-card">
+        <p className="empty-block">Loading workspace section...</p>
+      </article>
     </section>
   );
 }

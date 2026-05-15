@@ -1,8 +1,7 @@
 import { apiGet } from "@/lib/api";
+import { getWorkspaceBySlug } from "@/lib/workspace-server";
 
 import AnnouncementsClient from "./announcements-client";
-
-type Workspace = { id: number; slug: string; name: string };
 type Announcement = {
   id: number;
   workspace_id: number;
@@ -24,7 +23,7 @@ type Announcement = {
 };
 
 export default async function AnnouncementsPage({ params }: { params: { workspaceSlug: string } }) {
-  const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+  const workspace = await getWorkspaceBySlug(params.workspaceSlug);
   const announcements = await apiGet<Announcement[]>(`/workspaces/${workspace.id}/announcements`);
 
   return <AnnouncementsClient workspace={workspace} initialAnnouncements={announcements} />;

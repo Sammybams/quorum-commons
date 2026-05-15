@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 
@@ -35,7 +36,7 @@ export default function NewEventPage({ params }: { params: { workspaceSlug: stri
     setError(null);
 
     try {
-      const workspace = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+      const workspace = await resolveWorkspace(params.workspaceSlug);
       await apiPost(`/workspaces/${workspace.id}/events`, {
         title,
         slug: `${slugify(title)}-${Date.now().toString(36)}`,

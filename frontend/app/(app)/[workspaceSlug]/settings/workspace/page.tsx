@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 
 import { apiGet, apiPatch, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = {
   id: number;
@@ -53,7 +54,7 @@ export default function WorkspaceSettingsPage({ params }: { params: { workspaceS
   useEffect(() => {
     async function load() {
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
         setName(found.name);
         setSlug(found.slug);

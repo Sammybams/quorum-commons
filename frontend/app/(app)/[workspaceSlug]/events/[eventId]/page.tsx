@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type EventDetail = {
@@ -31,7 +32,7 @@ export default function EventDetailPage({ params }: { params: { workspaceSlug: s
   useEffect(() => {
     async function load() {
       try {
-        const found = await apiGet<Workspace>(`/workspaces/slug/${params.workspaceSlug}`);
+        const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
         setEvent(await apiGet<EventDetail>(`/workspaces/${found.id}/events/${params.eventId}`));
       } catch (err) {

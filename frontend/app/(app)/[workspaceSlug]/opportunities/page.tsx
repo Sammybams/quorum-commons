@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import { readSession } from "@/lib/session";
+import { resolveWorkspace } from "@/lib/workspace-client";
 
 type Workspace = { id: number; slug: string; name: string };
 type OpportunityMatch = {
@@ -58,7 +59,7 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
   const [session, setSession] = useState<Session | null>(null);
 
   async function loadPage(slug: string) {
-    const foundWorkspace = await apiGet<Workspace>(`/workspaces/slug/${slug}`);
+    const foundWorkspace = await resolveWorkspace(slug);
     const foundOpportunities = await apiGet<Opportunity[]>(`/workspaces/${foundWorkspace.id}/opportunities`);
     setWorkspace(foundWorkspace);
     setOpportunities(foundOpportunities);

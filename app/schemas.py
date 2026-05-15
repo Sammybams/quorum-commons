@@ -445,6 +445,7 @@ class AuthLoginRequest(BaseModel):
 
 
 class AuthLoginResponse(BaseModel):
+    workspace_id: int | None = None
     workspace_slug: str
     workspace_name: str
     member_id: int
@@ -476,6 +477,7 @@ class AuthRegisterRequest(BaseModel):
 
 
 class AuthMeWorkspace(BaseModel):
+    workspace_id: int
     workspace_slug: str
     workspace_name: str
     member_id: int
@@ -721,6 +723,36 @@ class MessageArtifactOut(BaseModel):
     reviewed_by_user_id: int | None = None
     review_note: str | None = None
     created_at: datetime
+
+
+class CommunityHighlightOut(BaseModel):
+    message_id: int
+    workspace_id: int
+    channel_id: int
+    provider: str
+    external_group_id: str
+    group_name: str | None = None
+    sender_name: str | None = None
+    sender_handle: str | None = None
+    message_type: str
+    text: str
+    received_at: datetime
+    artifact_id: int
+    artifact_type: str
+    confidence: float
+    summary: str | None = None
+    extracted_payload: dict[str, object] = Field(default_factory=dict)
+    status: str
+    reviewed_at: datetime | None = None
+    reviewed_by_user_id: int | None = None
+    review_note: str | None = None
+    created_at: datetime
+
+
+class CommunityInboxFeedOut(BaseModel):
+    highlights: list[CommunityHighlightOut] = Field(default_factory=list)
+    review_queue: list[CommunityHighlightOut] = Field(default_factory=list)
+    refreshed_at: datetime
 
 
 class ArtifactReviewDecisionRequest(BaseModel):
