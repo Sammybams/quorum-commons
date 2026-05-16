@@ -1208,6 +1208,10 @@ p {
   width: 26px;
 }
 
+.topbar-actions > .icon-button {
+  position: relative;
+}
+
 .avatar-chip {
   align-items: center;
   background: var(--primary);
@@ -1279,6 +1283,60 @@ p {
 .profile-menu button:hover {
   background: var(--surface-low);
   color: var(--primary);
+}
+
+.btn-link {
+  background: transparent;
+  border: 0;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0;
+}
+
+.status-dot {
+  align-items: center;
+  background: var(--primary);
+  border: 2px solid var(--surface-lowest);
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 700;
+  height: 16px;
+  justify-content: center;
+  min-width: 16px;
+  padding: 0 3px;
+  position: absolute;
+  right: -6px;
+  top: -6px;
+}
+
+.notifications-menu {
+  min-width: 300px;
+}
+
+.notifications-menu-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.notification-item {
+  align-items: flex-start !important;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.notification-item span {
+  display: grid;
+  gap: 2px;
+}
+
+.notification-item.unread {
+  background: var(--surface-low);
 }
 
 .workspace-canvas {
@@ -2901,6 +2959,65 @@ p {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.opportunity-point-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.opportunity-point {
+  background: var(--surface-low);
+  border: 1px solid var(--outline);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.opportunity-source {
+  margin-top: 12px;
+}
+
+.opportunity-source summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.opportunity-source p {
+  color: var(--text-muted);
+  margin: 8px 0 0;
+}
+
+.community-cluster {
+  display: grid;
+  gap: 12px;
+}
+
+.community-cluster-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.community-cluster-head h3 {
+  font-size: 0.96rem;
+  margin: 0;
+}
+
+.community-cluster-head small {
+  color: var(--text-muted);
+}
+
+.community-audit-block {
+  border-top: 1px solid var(--outline);
+  margin-top: 18px;
+  padding-top: 18px;
 }
 
 .bullet-list {

@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import ThemeToggle from "@/components/theme-toggle";
-import { apiPost } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { clearSession, readSession, saveSession, type QuorumSession, type QuorumWorkspace } from "@/lib/session";
 
 const navItems = [
@@ -41,8 +41,19 @@ export default function WorkspaceLayout({
   const [session, setSession] = useState<QuorumSession | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Array<{
+    id: number;
+    title: string;
+    body: string;
+    notification_type: string;
+    action_url?: string | null;
+    read_at?: string | null;
+    created_at: string;
+  }>>([]);
   const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const notificationsMenuRef = useRef<HTMLDivElement | null>(null);
   const workspaceName = session?.workspace_name || params.workspaceSlug;
   const workspaceLabel = workspaceName.split("-").join(" ");
   const currentWorkspaceSession = session?.workspaces?.find((item) => item.workspace_slug === params.workspaceSlug) || null;
@@ -66,6 +77,30 @@ export default function WorkspaceLayout({
   }, []);
 
   useEffect(() => {
+    if (!currentWorkspaceSession) {
+      return;
+    }
+    const loadNotifications = () =>
+      apiGet<Array<{
+        id: number;
+        title: string;
+        body: string;
+        notification_type: string;
+        action_url?: string | null;
+        read_at?: string | null;
+        created_at: string;
+      }>>(`/workspaces/${currentWorkspaceSession.workspace_id}/notifications`)
+        .then(setNotifications)
+        .catch(() => {});
+    loadNotifications();
+    if (!notificationsOpen) {
+      return;
+    }
+    const timer = window.setInterval(loadNotifications, 15000);
+    return () => window.clearInterval(timer);
+  }, [currentWorkspaceSession, notificationsOpen]);
+
+  useEffect(() => {
     prefetchTargets.forEach((href) => {
       router.prefetch(href);
     });
@@ -80,12 +115,16 @@ export default function WorkspaceLayout({
       if (profileMenuRef.current && !profileMenuRef.current.contains(target)) {
         setProfileOpen(false);
       }
+      if (notificationsMenuRef.current && !notificationsMenuRef.current.contains(target)) {
+        setNotificationsOpen(false);
+      }
     }
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setWorkspaceOpen(false);
         setProfileOpen(false);
+        setNotificationsOpen(false);
       }
     }
 
@@ -97,6 +136,36 @@ export default function WorkspaceLayout({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, []);
+
+  async function markNotificationRead(notificationId: number) {
+    if (!currentWorkspaceSession) {
+      return;
+    }
+    try {
+      const updated = await apiPost<{
+        id: number;
+        title: string;
+        body: string;
+        notification_type: string;
+        action_url?: string | null;
+        read_at?: string | null;
+        created_at: string;
+      }, Record<string, never>>(`/workspaces/${currentWorkspaceSession.workspace_id}/notifications/${notificationId}/read`, {});
+      setNotifications((current) => current.map((item) => (item.id === notificationId ? updated : item)));
+    } catch {}
+  }
+
+  async function markAllNotificationsRead() {
+    if (!currentWorkspaceSession) {
+      return;
+    }
+    try {
+      await apiPost(`/workspaces/${currentWorkspaceSession.workspace_id}/notifications/read-all`, {});
+      setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() })));
+    } catch {}
+  }
+
+  const unreadCount = notifications.filter((item) => !item.read_at).length;
 
   async function signOut() {
     if (session?.refresh_token || session?.access_token) {
@@ -240,11 +309,59 @@ export default function WorkspaceLayout({
           </div>
           <div className="topbar-actions">
             <ThemeToggle compact />
-            <button type="button" className="icon-button" aria-label="Notifications">
-              <span className="material-symbols-outlined" aria-hidden="true">
-                notifications
-              </span>
-            </button>
+            <div className="profile-menu-wrap" ref={notificationsMenuRef}>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Notifications"
+                aria-expanded={notificationsOpen}
+                onClick={() => {
+                  setNotificationsOpen((value) => !value);
+                  setWorkspaceOpen(false);
+                  setProfileOpen(false);
+                }}
+              >
+                <span className="material-symbols-outlined" aria-hidden="true">
+                  notifications
+                </span>
+                {unreadCount ? <span className="status-dot" aria-hidden="true">{unreadCount > 9 ? "9+" : unreadCount}</span> : null}
+              </button>
+              {notificationsOpen ? (
+                <div className="profile-menu notifications-menu">
+                  <div className="notifications-menu-head">
+                    <strong>Notifications</strong>
+                    {notifications.length ? (
+                      <button type="button" className="btn-link" onClick={markAllNotificationsRead}>
+                        Mark all read
+                      </button>
+                    ) : null}
+                  </div>
+                  {notifications.length ? (
+                    notifications.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`notification-item ${item.read_at ? "read" : "unread"}`}
+                        onClick={async () => {
+                          await markNotificationRead(item.id);
+                          if (item.action_url) {
+                            setNotificationsOpen(false);
+                            router.push(item.action_url);
+                          }
+                        }}
+                      >
+                        <span>
+                          <strong>{item.title}</strong>
+                          <small>{item.body}</small>
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted-copy">No notifications yet.</p>
+                  )}
+                </div>
+              ) : null}
+            </div>
             <Link href={`${base}/events/new`} className="btn-secondary" prefetch>
               <span className="material-symbols-outlined" aria-hidden="true">
                 add

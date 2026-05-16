@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import get_current_user, require_workspace_permission
+from ..services.notifications import notify_task_assignee
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/tasks", tags=["tasks"])
 
@@ -57,6 +58,8 @@ def create_task(
         "tasks",
         {"workspace_id": workspace_id, "created_by_user_id": membership.user_id, **payload.model_dump()},
     )
+    if payload.assigned_to_member_id:
+        notify_task_assignee(db, workspace_id=workspace_id, member_id=payload.assigned_to_member_id, task=task)
     return _task_out(db, task)
 
 
@@ -71,6 +74,9 @@ def update_task(
     task = db.find_one("tasks", {"id": task_id, "workspace_id": workspace_id})
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    prior_assignee_id = task.get("assigned_to_member_id")
     task.update(payload.model_dump(exclude_unset=True))
     task = db.save("tasks", task)
+    if task.get("assigned_to_member_id") and task.get("assigned_to_member_id") != prior_assignee_id:
+        notify_task_assignee(db, workspace_id=workspace_id, member_id=task.get("assigned_to_member_id"), task=task)
     return _task_out(db, task)

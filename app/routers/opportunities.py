@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import require_workspace_permission
+from ..services.notifications import create_notification, notify_workspace_admins
 from ..services.opportunities import refresh_opportunity_matches, top_matches_for_opportunity
 
 
@@ -86,6 +87,18 @@ def respond_to_opportunity(
         match["note"] = payload.note.strip() if payload.note else match.get("note")
         match["updated_at"] = datetime.utcnow()
         db.save("opportunity_matches", match)
+    workspace = db.find_by_id("workspaces", workspace_id)
+    if payload.status == "interested" and workspace:
+        notify_workspace_admins(
+            db,
+            workspace_id=workspace_id,
+            title="Member interest on opportunity",
+            body=f"{user.full_name} signaled interest in {opportunity.get('title') or 'an opportunity'}.",
+            notification_type="opportunity_interest",
+            action_url=f"/{workspace.slug}/opportunities",
+            metadata={"opportunity_id": opportunity_id, "member_id": membership.id},
+            dedupe_key=f"interest:{opportunity_id}:{membership.id}",
+        )
 
     return _opportunity_out(db, opportunity, member_id=membership.id, include_all_matches=False)
 
@@ -99,6 +112,9 @@ def update_opportunity_match_status(
     db: MongoStore = Depends(get_db),
     _membership=Depends(require_workspace_permission("opportunities.manage")),
 ):
+    opportunity = db.find_one("opportunities", {"workspace_id": workspace_id, "id": opportunity_id})
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
     match = db.find_one("opportunity_matches", {"workspace_id": workspace_id, "opportunity_id": opportunity_id, "id": match_id})
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -106,7 +122,54 @@ def update_opportunity_match_status(
     match["note"] = payload.note.strip() if payload.note else match.get("note")
     match["updated_at"] = datetime.utcnow()
     saved = db.save("opportunity_matches", match)
+    workspace = db.find_by_id("workspaces", workspace_id)
+    if workspace:
+        member = db.find_one("workspace_members", {"workspace_id": workspace_id, "id": match.member_id})
+        if member and payload.status in {"contacted", "assigned"}:
+            opportunity_title = opportunity.get("title") or "an opportunity"
+            body = (
+                f"A community lead has contacted you about {opportunity_title}."
+                if payload.status == "contacted"
+                else f"You have been assigned to {opportunity_title}."
+            )
+            create_notification(
+                db,
+                workspace_id=workspace_id,
+                user_id=member.user_id,
+                title="Opportunity update",
+                body=body,
+                notification_type="opportunity_workflow",
+                action_url=f"/{workspace.slug}/opportunities",
+                metadata={"opportunity_id": opportunity_id, "match_id": match_id, "status": payload.status},
+                dedupe_key=f"match-status:{match_id}:{payload.status}",
+            )
+    if payload.status == "assigned":
+        if opportunity and str(opportunity.get("status") or "").strip().lower() == "open":
+            opportunity["status"] = "in_progress"
+            db.save("opportunities", opportunity)
     return _match_out(saved)
+
+
+@router.post("/{opportunity_id}/status", response_model=schemas.OpportunityOut)
+def update_opportunity_status(
+    workspace_id: int,
+    opportunity_id: int,
+    payload: schemas.OpportunityStatusUpdateRequest,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("opportunities.manage")),
+):
+    opportunity = db.find_one("opportunities", {"workspace_id": workspace_id, "id": opportunity_id})
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    opportunity["status"] = payload.status
+    if payload.note:
+        opportunity["outcome_note"] = payload.note.strip()
+    if payload.status in {"filled", "closed"}:
+        opportunity["closed_at"] = datetime.utcnow()
+    else:
+        opportunity["closed_at"] = None
+    saved = db.save("opportunities", opportunity)
+    return _opportunity_out(db, saved, include_all_matches=True)
 
 
 def _opportunity_out(db: MongoStore, opportunity, *, member_id: int | None = None, include_all_matches: bool = False) -> schemas.OpportunityOut:
@@ -122,11 +185,20 @@ def _opportunity_out(db: MongoStore, opportunity, *, member_id: int | None = Non
         source=opportunity.get("source") or "manual",
         title=opportunity.title,
         description=opportunity.get("description") or "",
+        summary=opportunity.get("summary"),
+        organization=opportunity.get("organization"),
         location=opportunity.get("location"),
+        venue=opportunity.get("venue"),
         trade_tags=opportunity.get("trade_tags") or [],
+        key_points=opportunity.get("key_points") or [],
+        event_date=opportunity.get("event_date"),
         deadline=opportunity.get("deadline"),
         contact=opportunity.get("contact"),
+        action_url=opportunity.get("action_url"),
+        source_excerpt=opportunity.get("source_excerpt"),
         status=opportunity.get("status") or "open",
+        outcome_note=opportunity.get("outcome_note"),
+        closed_at=opportunity.get("closed_at"),
         match_count=db.count("opportunity_matches", {"workspace_id": opportunity.workspace_id, "opportunity_id": opportunity.id}),
         matches=[_match_out(match) for match in matches] if include_all_matches else [],
         my_match=my_match,

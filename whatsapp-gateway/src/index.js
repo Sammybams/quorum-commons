@@ -9,20 +9,23 @@ const {
   default: makeWASocket,
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } = require('@whiskeysockets/baileys')
 
 const app = express()
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: process.env.WHATSAPP_GATEWAY_JSON_LIMIT || '4mb' }))
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
+const BAILEYS_LOG_LEVEL = process.env.BAILEYS_LOG_LEVEL || 'fatal'
 const HOST = process.env.HOST || '127.0.0.1'
 const PORT = Number(process.env.PORT || 3001)
 const INTERNAL_TOKEN = String(process.env.WHATSAPP_GATEWAY_TOKEN || '').trim()
 const AUTH_ROOT = process.env.WHATSAPP_AUTH_ROOT || path.join(process.cwd(), '.auth', 'whatsapp')
 const QUORUM_API_BASE_URL = String(process.env.QUORUM_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').trim().replace(/\/$/, '')
 const MAX_HISTORY_MESSAGES_PER_GROUP = Number(process.env.WHATSAPP_HISTORY_PER_GROUP || 150)
+const MAX_MEDIA_FORWARD_BYTES = Number(process.env.WHATSAPP_MEDIA_FORWARD_LIMIT || 1800000)
 
 const sessions = new Map()
 const selectedGroupsCache = new Map()
@@ -164,6 +167,28 @@ function extractAttachmentMimeType(message) {
   ).trim() || null
 }
 
+function extractAttachmentLength(message) {
+  const unwrapped = unwrapMessageContainer(message)
+  if (!unwrapped || typeof unwrapped !== 'object') return null
+  const rawValue =
+    unwrapped.documentMessage?.fileLength
+    || unwrapped.imageMessage?.fileLength
+    || unwrapped.videoMessage?.fileLength
+    || null
+  if (rawValue == null) return null
+  if (typeof rawValue === 'number') return rawValue
+  if (typeof rawValue === 'string') {
+    const numeric = Number(rawValue)
+    return Number.isFinite(numeric) ? numeric : null
+  }
+  if (typeof rawValue?.toNumber === 'function') {
+    try {
+      return rawValue.toNumber()
+    } catch {}
+  }
+  return null
+}
+
 async function toQrDataUrl(qr) {
   if (!qr) return null
   try {
@@ -176,6 +201,34 @@ async function toQrDataUrl(qr) {
 
 function markSessionUpdated(session) {
   session.updatedAt = nowIso()
+}
+
+function shortErrorMessage(error) {
+  const raw = String(error?.message || error || '').trim()
+  if (!raw) return 'unknown_error'
+  return raw.slice(0, 220)
+}
+
+function sessionFailureState(error) {
+  const lowered = shortErrorMessage(error).toLowerCase()
+  if (lowered.includes('timed out') || lowered.includes('timeout')) {
+    return 'reconnect_required'
+  }
+  return 'degraded'
+}
+
+function markSessionFailure(session, error, state = null) {
+  session.state = state || sessionFailureState(error)
+  session.lastError = shortErrorMessage(error)
+  session.qrCodeDataUrl = null
+  session.qrUpdatedAt = null
+  session.pairingCodeRequested = false
+  session.shouldReconnect = false
+  try {
+    session.socket?.end?.(new Error(session.lastError))
+  } catch {}
+  session.socket = null
+  markSessionUpdated(session)
 }
 
 function serializeSession(session) {
@@ -245,8 +298,12 @@ function buildInboundPayload(session, inbound, options = {}) {
   const remoteJid = String(inbound.key.remoteJid || '').trim()
   if (!remoteJid || remoteJid === 'status@broadcast' || !remoteJid.endsWith('@g.us')) return null
 
-  const body = extractMessageText(inbound.message)
   const messageType = detectMessageType(inbound.message)
+  const attachmentName = extractAttachmentName(inbound.message)
+  let body = extractMessageText(inbound.message)
+  if (!body && ['image', 'document', 'video'].includes(messageType)) {
+    body = attachmentName ? `Shared ${messageType}: ${attachmentName}` : `Shared ${messageType}`
+  }
   if (!body && !['image', 'document', 'video'].includes(messageType)) return null
 
   const senderJid = String(
@@ -266,8 +323,9 @@ function buildInboundPayload(session, inbound, options = {}) {
     body,
     chat_name: groupNameFor(session, remoteJid, options.chatName || remoteJid),
     message_type: messageType,
-    attachment_name: extractAttachmentName(inbound.message),
+    attachment_name: attachmentName,
     attachment_mime_type: extractAttachmentMimeType(inbound.message),
+    attachment_size_bytes: extractAttachmentLength(inbound.message),
     push_name: String(
       inbound.pushName
         || (inbound.key.fromMe ? session.displayName || session.phoneNumber || '' : '')
@@ -276,6 +334,35 @@ function buildInboundPayload(session, inbound, options = {}) {
     from_me: Boolean(inbound.key.fromMe),
     sync_source: String(options.syncSource || 'live'),
   }
+}
+
+async function attachMediaPreview(session, inbound, payload) {
+  if (!payload || !['image', 'document'].includes(String(payload.message_type || ''))) return payload
+  const attachmentBytes = Number(payload.attachment_size_bytes || 0)
+  if (attachmentBytes && attachmentBytes > MAX_MEDIA_FORWARD_BYTES) {
+    payload.attachment_skipped_reason = 'too_large'
+    return payload
+  }
+  if (!session?.socket) return payload
+  try {
+    const buffer = await downloadMediaMessage(
+      inbound,
+      'buffer',
+      {},
+      { logger, reuploadRequest: session.socket.updateMediaMessage }
+    )
+    if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) return payload
+    if (buffer.length > MAX_MEDIA_FORWARD_BYTES) {
+      payload.attachment_skipped_reason = 'too_large'
+      return payload
+    }
+    payload.attachment_size_bytes = buffer.length
+    payload.attachment_base64 = buffer.toString('base64')
+  } catch (error) {
+    logger.warn({ channelId: session.channelId, error: String(error) }, 'Failed to extract WhatsApp media preview')
+    payload.attachment_skipped_reason = 'download_failed'
+  }
+  return payload
 }
 
 function gatewayConfigUrl(channelId) {
@@ -361,6 +448,27 @@ async function postDiscoveredGroups(session, groups) {
   }
 }
 
+async function refreshDiscoveredGroupsInBackground(session) {
+  if (!session?.socket) return
+  try {
+    const groups = await Promise.race([
+      discoverGroupsForSession(session),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timed Out while refreshing WhatsApp groups')), 20000)),
+    ])
+    await postDiscoveredGroups(session, groups)
+    session.lastError = null
+    markSessionUpdated(session)
+  } catch (error) {
+    logger.warn({ channelId: session.channelId, error: String(error) }, 'Failed to refresh WhatsApp groups in background')
+    if (session.state === 'connected') {
+      session.lastError = shortErrorMessage(error)
+      markSessionUpdated(session)
+    } else {
+      markSessionFailure(session, error)
+    }
+  }
+}
+
 async function stopSession(channelId, { logout = false, removeAuth = false } = {}) {
   const session = sessions.get(String(channelId))
   if (session) {
@@ -383,42 +491,45 @@ async function stopSession(channelId, { logout = false, removeAuth = false } = {
 }
 
 async function syncSelectedGroupHistory(session) {
-  if (!session?.socket || session.state !== 'connected') {
-    throw new Error('session_not_connected')
-  }
-
-  ensureSessionCaches(session)
-  const config = await fetchGatewayConfig(session, { forceRefresh: true })
-  const selectedGroups = Array.isArray(config.selected_group_ids) ? config.selected_group_ids : []
-  let syncedMessages = 0
-
-  for (const groupId of selectedGroups) {
-    const history = session.historyCache.get(groupId) || []
-    for (const payload of history) {
-      const cacheKey = historyCacheKey(payload)
-      if (!cacheKey || session.historyDeliveredIds.has(cacheKey)) continue
-      try {
-        await postInboundMessage(session, payload)
-        session.historyDeliveredIds.add(cacheKey)
-        syncedMessages += 1
-      } catch (error) {
-        logger.warn({ channelId: session.channelId, groupId, error: String(error) }, 'Failed to deliver cached WhatsApp history message')
-      }
-    }
-  }
-
-  markSessionUpdated(session)
   return {
     channelId: session.channelId,
-    selectedGroups: selectedGroups.length,
-    syncedMessages,
+    selectedGroups: 0,
+    syncedMessages: 0,
+    liveOnly: true,
+  }
+}
+
+async function settleConnectedSession(session) {
+  session.state = 'initializing'
+  session.lastError = null
+  markSessionUpdated(session)
+  try {
+    session.state = 'connected'
+    session.connectedAt = session.connectedAt || nowIso()
+    session.qrCodeDataUrl = null
+    session.qrUpdatedAt = nowIso()
+    session.pairingCodeRequested = false
+    session.lastError = null
+    session.jid = session.socket?.user?.id || session.jid
+    session.displayName = session.socket?.user?.name || session.displayName
+    session.phoneNumber = derivePhoneNumberFromJid(session.jid) || session.phoneNumber
+    session.shouldReconnect = true
+    markSessionUpdated(session)
+    setTimeout(() => {
+      refreshDiscoveredGroupsInBackground(session).catch(() => {})
+    }, 0)
+  } catch (error) {
+    logger.warn({ channelId: session.channelId, error: String(error) }, 'WhatsApp session failed health check after connect')
+    markSessionFailure(session, error)
   }
 }
 
 async function startSession({ channelId, sharedSecret, phoneNumber = null, pairingMode = 'qr', label = null }) {
   const key = String(channelId)
   const existing = sessions.get(key)
-  if (existing?.socket) return existing
+  if (existing?.socket) {
+    await stopSession(channelId, { logout: false, removeAuth: false })
+  }
 
   await ensureAuthRoot()
   const authDir = sessionDirFor(channelId)
@@ -466,24 +577,17 @@ async function startSession({ channelId, sharedSecret, phoneNumber = null, pairi
     auth: state,
     browser: Browsers.macOS('Quorum WhatsApp Gateway'),
     printQRInTerminal: false,
-    logger: logger.child({ module: 'baileys', channelId, level: 'silent' }),
-    syncFullHistory: true,
+    logger: logger.child({ module: 'baileys', channelId }, { level: BAILEYS_LOG_LEVEL }),
+    syncFullHistory: false,
     markOnlineOnConnect: false,
+    shouldIgnoreJid: (jid) => String(jid || '') === 'status@broadcast',
   })
   session.socket = socket
 
   socket.ev.on('creds.update', saveCreds)
-  socket.ev.on('messaging-history.set', async (event) => {
-    const messages = Array.isArray(event?.messages) ? event.messages : []
-    for (const inbound of messages) {
-      const payload = buildInboundPayload(session, inbound, { syncSource: 'history' })
-      if (!payload) continue
-      cacheHistoryPayload(session, payload)
-    }
-    markSessionUpdated(session)
-  })
   socket.ev.on('messages.upsert', async (event) => {
-    if (!event || event.type !== 'notify') return
+    if (!session?.socket || session.state !== 'connected') return
+    if (!event || !['notify', 'append'].includes(String(event.type || ''))) return
     const config = await fetchGatewayConfig(session).catch((error) => {
       logger.warn({ channelId, error: String(error) }, 'Failed to load WhatsApp selected groups')
       return { selected_group_ids: [] }
@@ -491,9 +595,10 @@ async function startSession({ channelId, sharedSecret, phoneNumber = null, pairi
     const selectedGroups = Array.isArray(config.selected_group_ids) ? config.selected_group_ids : []
 
     for (const inbound of event.messages || []) {
-      const payload = buildInboundPayload(session, inbound, { syncSource: 'live' })
+      let payload = buildInboundPayload(session, inbound, { syncSource: 'live' })
       if (!payload) continue
       if (selectedGroups.length === 0 || !selectedGroups.includes(payload.remote_jid)) continue
+      payload = await attachMediaPreview(session, inbound, payload)
 
       try {
         await postInboundMessage(session, payload)
@@ -515,22 +620,10 @@ async function startSession({ channelId, sharedSecret, phoneNumber = null, pairi
     }
 
     if (connection === 'open') {
-      session.state = 'connected'
-      session.connectedAt = session.connectedAt || nowIso()
-      session.qrCodeDataUrl = null
-      session.qrUpdatedAt = nowIso()
-      session.pairingCodeRequested = false
-      session.lastError = null
       session.jid = socket.user?.id || session.jid
       session.displayName = socket.user?.name || session.displayName
       session.phoneNumber = derivePhoneNumberFromJid(session.jid) || session.phoneNumber
-      markSessionUpdated(session)
-      try {
-        const groups = await discoverGroupsForSession(session)
-        await postDiscoveredGroups(session, groups)
-      } catch (error) {
-        logger.warn({ channelId, error: String(error) }, 'Failed to discover WhatsApp groups after connect')
-      }
+      await settleConnectedSession(session)
       return
     }
 
@@ -541,7 +634,7 @@ async function startSession({ channelId, sharedSecret, phoneNumber = null, pairi
       session.qrUpdatedAt = null
       session.pairingCodeRequested = false
       session.lastError = lastDisconnect?.error ? String(lastDisconnect.error) : null
-      session.state = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
+      session.state = statusCode === DisconnectReason.loggedOut ? 'logged_out' : session.state === 'reconnect_required' ? 'reconnect_required' : 'disconnected'
       markSessionUpdated(session)
 
       if (statusCode === DisconnectReason.loggedOut) {
@@ -573,7 +666,9 @@ async function startSession({ channelId, sharedSecret, phoneNumber = null, pairi
 }
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, sessions: sessions.size })
+  const allSessions = Array.from(sessions.values())
+  const activeSessions = allSessions.filter((session) => Boolean(session?.socket)).length
+  res.json({ ok: true, sessions: allSessions.length, active_sessions: activeSessions })
 })
 
 app.get('/internal/sessions/:channelId', async (req, res) => {
@@ -617,6 +712,23 @@ app.post('/internal/sessions/:channelId/disconnect', async (req, res) => {
     res.json({ ok: true })
   } catch (error) {
     logger.error({ error: String(error) }, 'Failed to stop Quorum WhatsApp session')
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+app.post('/internal/sessions/:channelId/reset', async (req, res) => {
+  const channelId = Number(req.params.channelId)
+  if (!channelId) {
+    return res.status(400).json({ error: 'channelId is required' })
+  }
+  try {
+    await stopSession(channelId, {
+      logout: true,
+      removeAuth: true,
+    })
+    res.json({ ok: true, channelId, state: 'configured' })
+  } catch (error) {
+    logger.error({ error: String(error) }, 'Failed to reset Quorum WhatsApp session')
     res.status(500).json({ error: String(error) })
   }
 })

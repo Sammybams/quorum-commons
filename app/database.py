@@ -73,6 +73,7 @@ class MongoStore:
         "campaigns": "finance",
         "funding_streams": "finance",
         "contributions": "finance",
+        "community_financial_records": "finance",
         "virtual_accounts": "finance",
         "budgets": "finance",
         "budget_lines": "finance",
@@ -123,6 +124,7 @@ class MongoStore:
         "campaigns",
         "funding_streams",
         "contributions",
+        "community_financial_records",
         "virtual_accounts",
         "budgets",
         "budget_lines",
@@ -186,6 +188,8 @@ class MongoStore:
         self.collection("event_attendees").create_index([("event_id", ASCENDING), ("email", ASCENDING)], unique=True, sparse=True)
         self.collection("campaigns").create_index([("slug", ASCENDING)], unique=True)
         self.collection("contributions").create_index([("gateway_ref", ASCENDING)], unique=True, sparse=True)
+        self.collection("community_financial_records").create_index([("workspace_id", ASCENDING), ("message_id", ASCENDING), ("artifact_id", ASCENDING)], unique=True)
+        self.collection("community_financial_records").create_index([("workspace_id", ASCENDING), ("created_at", DESCENDING)])
         self.collection("dues_payments").create_index([("gateway_ref", ASCENDING)], unique=True, sparse=True)
         self.collection("virtual_accounts").create_index([("reference", ASCENDING)], unique=True)
         self.collection("virtual_accounts").create_index([("workspace_id", ASCENDING), ("external_account_number", ASCENDING)], sparse=True)

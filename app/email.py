@@ -244,6 +244,99 @@ def send_announcement_email(
     )
 
 
+def send_task_assignment_email(
+    *,
+    to_email: str,
+    full_name: str,
+    workspace_name: str,
+    task_title: str,
+    task_description: str | None = None,
+    due_date: str | None = None,
+    action_url: str | None = None,
+) -> EmailResult:
+    if not _smtp_configured():
+        return EmailResult(status="not_configured")
+
+    footer_parts = []
+    if task_description:
+        footer_parts.append(task_description[:280])
+    if due_date:
+        footer_parts.append(f"Due: {due_date}")
+    return _send_simple_email(
+        to_email=to_email,
+        subject=f"{workspace_name}: Task assigned",
+        intro=f"Hi {full_name}, you have been assigned a task in {workspace_name}: {task_title}",
+        action_label="Open tasks",
+        action_url=action_url or f"{_frontend_url()}/tasks",
+        footer=" · ".join(footer_parts) if footer_parts else "Open Quorum to view the task details.",
+    )
+
+
+def build_task_assignment_email(
+    *,
+    to_email: str,
+    full_name: str,
+    workspace_name: str,
+    task_title: str,
+    task_description: str | None,
+    due_date: str | None,
+    action_url: str,
+    from_email: str,
+    from_name: str,
+) -> EmailMessage:
+    safe_name = html.escape(full_name)
+    safe_workspace = html.escape(workspace_name)
+    safe_title = html.escape(task_title)
+    safe_detail = html.escape(task_description or "")
+    safe_due = html.escape(due_date or "")
+    safe_url = html.escape(action_url)
+
+    message = EmailMessage()
+    message["Subject"] = f"{workspace_name}: Task assigned"
+    message["From"] = f"{from_name} <{from_email}>"
+    message["To"] = to_email
+    plain_lines = [
+        f"Hi {full_name},",
+        "",
+        f"You have been assigned a task in {workspace_name}: {task_title}",
+    ]
+    if task_description:
+        plain_lines.extend(["", task_description])
+    if due_date:
+        plain_lines.extend(["", f"Due: {due_date}"])
+    plain_lines.extend(["", action_url])
+    message.set_content("\n".join(plain_lines))
+    message.add_alternative(
+        f"""
+        <!doctype html>
+        <html>
+          <body style="margin:0;background:#f8fafc;font-family:Inter,Arial,sans-serif;color:#0f172a;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px;">
+              <tr>
+                <td align="center">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:28px;">
+                    <tr>
+                      <td>
+                        <p style="margin:0 0 18px;font-size:15px;line-height:1.6;color:#475569;">Hi {safe_name}, you have been assigned a task in <strong>{safe_workspace}</strong>.</p>
+                        <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25;color:#0f172a;">{safe_title}</h1>
+                        {f'<p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#475569;">{safe_detail}</p>' if safe_detail else ''}
+                        {f'<p style="margin:0 0 18px;font-size:13px;line-height:1.5;color:#64748b;">Due: {safe_due}</p>' if safe_due else ''}
+                        <a href="{safe_url}" style="display:inline-block;background:#1b5ef7;color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px;font-weight:600;font-size:14px;">Open tasks</a>
+                        <p style="margin:24px 0 0;font-size:12px;line-height:1.5;color:#94a3b8;">{safe_url}</p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """,
+        subtype="html",
+    )
+    return message
+
+
 def _deliver(message: EmailMessage) -> None:
     host = os.getenv("SMTP_HOST", "")
     port = int(os.getenv("SMTP_PORT", "587"))

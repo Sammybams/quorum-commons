@@ -142,6 +142,18 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     if (!workspace || groupsByChannel[channelId]) {
       return;
     }
+    const channel = channels.find((item) => item.id === channelId);
+    if (!channel) {
+      return;
+    }
+    if (channel.provider === "whatsapp" && channel.status === "connected" && Number(channel.metadata.discovered_group_count || 0) === 0) {
+      await discoverWhatsAppGroups(channelId);
+      return;
+    }
+    if (channel.provider === "telegram" && channel.status === "connected" && Number(channel.metadata.discovered_group_count || 0) === 0) {
+      await discoverTelegramGroups(channelId);
+      return;
+    }
     await refreshChannelGroups(workspace.id, channelId);
   }
 
@@ -446,7 +458,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     }
   }
 
-  async function syncWhatsAppChannel(channelId: number) {
+  async function resetWhatsAppSession(channelId: number) {
     if (!workspace) {
       return;
     }
@@ -454,13 +466,12 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     setError(null);
     try {
       await apiPost<{ ok: boolean; message: string }, Record<string, never>>(
-        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/sync`,
+        `/workspaces/${workspace.id}/community-channels/${channelId}/whatsapp/session/reset`,
         {},
       );
       await reloadChannels(workspace, { includeGroups: false });
-      await refreshChannelGroups(workspace.id, channelId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to import WhatsApp history.");
+      setError(err instanceof Error ? err.message : "Unable to reset WhatsApp session.");
     } finally {
       setWhatsAppActionChannelId(null);
     }
@@ -513,10 +524,6 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         [channelId]: (current[channelId] || []).map((group) => (group.id === groupId ? updated : group)),
       }));
       await reloadChannels(workspace, { includeGroups: false });
-      const channel = channels.find((item) => item.id === channelId)
-      if (syncEnabled && channel?.provider === "whatsapp" && channel.status === "connected") {
-        await syncWhatsAppChannel(channelId);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update group sync.");
     }
@@ -531,7 +538,12 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     const filteredDiscoverableGroups = discoverableGroups.filter((group) =>
       group.group_name.toLowerCase().includes(groupFilter),
     );
-    const statusTone = channel.status === "connected" ? "ok" : channel.status === "error" ? "danger" : "pending";
+    const statusTone =
+      channel.status === "connected"
+        ? "ok"
+        : channel.status === "reconnect_required" || channel.status === "degraded"
+          ? "danger"
+          : "pending";
 
     return (
       <article className="panel-card integration-channel-card" key={channel.id}>
@@ -565,7 +577,19 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
           {channel.provider === "whatsapp" ? (
             <div className="integration-summary-item">
               <span>Connection</span>
-              <strong>{channel.status === "connected" ? "Connected" : channel.status === "qr_pending" ? "Waiting for QR scan" : "Not connected"}</strong>
+              <strong>
+                {channel.status === "connected"
+                  ? "Connected"
+                  : channel.status === "initializing"
+                    ? "Finishing startup"
+                    : channel.status === "qr_pending"
+                      ? "Waiting for QR scan"
+                      : channel.status === "reconnect_required"
+                        ? "Reconnect required"
+                        : channel.status === "degraded"
+                          ? "Degraded"
+                          : "Not connected"}
+              </strong>
             </div>
           ) : null}
         </div>
@@ -592,7 +616,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         ) : null}
         {channel.provider === "whatsapp" ? (
           <p className="muted-copy integration-inline-note">
-            Scan the QR with the WhatsApp account for this workspace, choose the groups to watch, then import recent messages once after enabling a group.
+            Scan the QR with the WhatsApp account for this workspace, then enable only the groups Quorum should watch live.
           </p>
         ) : null}
         {channel.provider === "whatsapp" && typeof channel.metadata.qr_code_data_url === "string" && channel.metadata.qr_code_data_url ? (
@@ -646,7 +670,13 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
                 onClick={() => startWhatsAppSession(channel.id)}
                 disabled={whatsAppActionChannelId === channel.id}
               >
-                {whatsAppActionChannelId === channel.id ? "Working..." : channel.status === "connected" ? "Reconnect WhatsApp" : "Connect WhatsApp"}
+                {whatsAppActionChannelId === channel.id
+                  ? "Working..."
+                  : channel.status === "connected"
+                    ? "Reconnect WhatsApp"
+                    : channel.status === "reconnect_required" || channel.status === "degraded"
+                      ? "Retry WhatsApp"
+                      : "Connect WhatsApp"}
               </button>
               <button
                 type="button"
@@ -667,10 +697,10 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => syncWhatsAppChannel(channel.id)}
-                disabled={whatsAppActionChannelId === channel.id || channel.status !== "connected" || selectedGroups.length === 0}
+                onClick={() => resetWhatsAppSession(channel.id)}
+                disabled={whatsAppActionChannelId === channel.id}
               >
-                Import recent messages
+                Reset session
               </button>
               <button
                 type="button"
@@ -697,7 +727,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               onClick={() => ensureChannelGroups(channel.id)}
               disabled={channel.provider === "whatsapp" && channel.status !== "connected"}
             >
-              Load groups
+              {whatsAppActionChannelId === channel.id || telegramActionChannelId === channel.id ? "Loading groups..." : "Load groups"}
             </button>
           </div>
         ) : groups.length === 0 ? (
@@ -716,7 +746,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
                 <span>{selectedGroups.length}</span>
               </div>
               {channel.provider === "whatsapp" ? (
-                <p className="muted-copy">New messages in selected groups are monitored live. Older chat messages are imported when you run the history import.</p>
+                <p className="muted-copy">New messages in selected groups are monitored live. Older WhatsApp history is no longer imported automatically.</p>
               ) : null}
               {selectedGroups.length ? (
                 <div className="group-chip-list">

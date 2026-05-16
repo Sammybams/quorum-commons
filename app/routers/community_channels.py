@@ -3,15 +3,19 @@ from __future__ import annotations
 import os
 import secrets
 from datetime import datetime
+import re
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
+from ..payments import PaymentInitializationError, squad_configured, verify_squad_transaction
 from ..rbac import require_workspace_permission
 from ..services.community_intelligence import CommunityIntelligenceError, analyze_message
+from ..services.notifications import create_notification, notify_task_assignee, notify_workspace_admins
 from ..services.opportunities import refresh_opportunity_matches
+from ..services.tasks import suggest_task_assignee
 from ..services.telegram import (
     TelegramServiceError,
     telegram_list_groups,
@@ -64,6 +68,18 @@ async def _whatsapp_gateway_request(method: str, path: str, payload: dict | None
         raise HTTPException(status_code=503, detail=f"WhatsApp gateway request failed: {detail}")
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"WhatsApp gateway unavailable: {str(exc)}")
+
+
+def _clear_whatsapp_session_fields(channel, *, status: str, last_error: str | None = None) -> None:
+    channel["status"] = status
+    channel["display_name"] = None
+    channel["phone_number"] = None
+    channel["whatsapp_jid"] = None
+    channel["qr_code_data_url"] = None
+    channel["qr_updated_at"] = None
+    channel["connected_at"] = None if status in {"configured", "disconnected"} else channel.get("connected_at")
+    channel["updated_at"] = datetime.utcnow()
+    channel["last_error"] = last_error
 
 
 def _apply_whatsapp_gateway_status(channel, payload: dict) -> None:
@@ -260,6 +276,8 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
             community_profile=workspace.get("community_profile") if workspace else None,
             message_type=message.message_type,
             attachment_name=str((message.get("raw_payload") or {}).get("attachment_name") or "").strip() or None,
+            attachment_mime_type=str((message.get("raw_payload") or {}).get("attachment_mime_type") or "").strip() or None,
+            attachment_base64=str((message.get("raw_payload") or {}).get("attachment_base64") or "").strip() or None,
             recent_messages=list(reversed(recent_context_messages)),
             prefer_lightweight=sync_source == "history",
         )
@@ -280,7 +298,23 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
             },
         )
 
+    raw_payload = message.get("raw_payload") or {}
+    has_media_context = bool(raw_payload.get("attachment_mime_type") or raw_payload.get("attachment_name") or raw_payload.get("attachment_base64"))
+    if artifact.artifact_type == "other" and message.message_type in {"image", "document"} and has_media_context:
+        artifact = schemas.CommunityArtifact(
+            artifact_type="other",
+            confidence=max(float(artifact.confidence or 0), 0.22),
+            summary="media needs review",
+            extracted_payload={
+                **(artifact.extracted_payload or {}),
+                "attachment_text_excerpt": (artifact.extracted_payload or {}).get("attachment_text_excerpt"),
+                "attachment_skipped_reason": raw_payload.get("attachment_skipped_reason"),
+            },
+        )
+
     status = _artifact_initial_status(artifact.artifact_type, artifact.confidence)
+    if artifact.artifact_type == "other" and message.message_type in {"image", "document"} and has_media_context:
+        status = "needs_review"
     stored = db.insert(
         "message_artifacts",
         {
@@ -298,6 +332,7 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
     )
     if status == "ready":
         _apply_artifact_outcome(db, artifact=stored, message=message)
+    _notify_for_high_value_artifact(db, artifact=stored, message=message, group_name=group_name)
     return stored
 
 
@@ -310,7 +345,21 @@ def _artifact_initial_status(artifact_type: str, confidence: float) -> str:
     return "needs_review"
 
 
+def _clean_source_excerpt(text: str, *, limit: int = 240) -> str:
+    cleaned = re.sub(r"[*_~`]+", "", str(text or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    shortened = cleaned[:limit].rsplit(" ", 1)[0].strip()
+    return f"{shortened}..." if shortened else f"{cleaned[:limit]}..."
+
+
 def _apply_artifact_outcome(db: MongoStore, *, artifact, message):
+    if artifact.artifact_type in {"payment_receipt", "contribution_signal"}:
+        _store_financial_record_from_artifact(db, artifact=artifact, message=message)
+        return None
+    if artifact.artifact_type == "task_signal":
+        return _create_or_update_task_from_artifact(db, artifact=artifact, message=message)
     if artifact.artifact_type != "opportunity":
         return None
     existing = db.find_one("opportunities", {"workspace_id": message.workspace_id, "message_id": message.id})
@@ -326,16 +375,394 @@ def _apply_artifact_outcome(db: MongoStore, *, artifact, message):
             "message_id": message.id,
             "source": message.provider,
             "title": str(payload.get("title") or artifact.get("summary") or message.text[:120]),
-            "description": message.text,
+            "description": str(payload.get("summary") or artifact.get("summary") or _clean_source_excerpt(message.text, limit=220)),
+            "summary": str(payload.get("summary") or "").strip() or None,
+            "organization": payload.get("organization"),
             "location": payload.get("location"),
+            "venue": payload.get("venue"),
             "trade_tags": payload.get("trade_tags") or [],
+            "key_points": payload.get("key_points") or [],
+            "event_date": payload.get("event_date"),
             "deadline": payload.get("deadline"),
             "contact": payload.get("contact"),
+            "action_url": payload.get("action_url"),
+            "source_excerpt": _clean_source_excerpt(message.text, limit=420),
             "status": "open",
         },
     )
     refresh_opportunity_matches(db, opportunity=created)
     return created
+
+
+def _create_or_update_task_from_artifact(
+    db: MongoStore,
+    *,
+    artifact,
+    message,
+    created_by_user_id: int | None = None,
+    override_assignee_member_id: int | None = None,
+    override_due_date: str | None = None,
+    override_priority: str | None = None,
+    note: str | None = None,
+):
+    existing = db.find_one("tasks", {"workspace_id": message.workspace_id, "linked_module": "community_artifact", "linked_id": artifact.id})
+    if existing:
+        return existing
+
+    payload = artifact.get("extracted_payload") or {}
+    suggestion = suggest_task_assignee(db, workspace_id=message.workspace_id, text=message.text, extracted_payload=payload)
+    assigned_to_member_id = override_assignee_member_id if override_assignee_member_id is not None else (suggestion.get("member_id") if suggestion else None)
+    task_title = str(payload.get("title") or artifact.get("summary") or _clean_source_excerpt(message.text, limit=120)).strip()[:180]
+    task_description_parts = [
+        str(payload.get("summary") or "").strip() or None,
+        note.strip() if note else None,
+        f"Source: {_clean_source_excerpt(message.text, limit=320)}",
+    ]
+    task = db.insert(
+        "tasks",
+        {
+            "workspace_id": message.workspace_id,
+            "title": task_title,
+            "description": "\n\n".join(part for part in task_description_parts if part) or None,
+            "assigned_to_member_id": assigned_to_member_id,
+            "due_date": override_due_date or payload.get("due_hint") or payload.get("deadline") or payload.get("event_date"),
+            "priority": str(override_priority or payload.get("priority") or "medium").strip().lower(),
+            "status": "todo",
+            "linked_module": "community_artifact",
+            "linked_id": artifact.id,
+            "created_by_user_id": created_by_user_id,
+        },
+    )
+    if assigned_to_member_id:
+        notify_task_assignee(
+            db,
+            workspace_id=message.workspace_id,
+            member_id=assigned_to_member_id,
+            task=task,
+            title="Task assigned from community inbox",
+        )
+    return task
+
+
+def _store_financial_record_from_artifact(db: MongoStore, *, artifact, message):
+    payload = artifact.get("extracted_payload") or {}
+    existing = db.find_one(
+        "community_financial_records",
+        {"workspace_id": message.workspace_id, "message_id": message.id, "artifact_id": artifact.id},
+    )
+    if existing:
+        return existing
+
+    reference = str(payload.get("reference") or "").strip() or None
+    amount_raw = payload.get("amount")
+    amount = None
+    if amount_raw not in (None, ""):
+        try:
+            amount = float(str(amount_raw).replace(",", ""))
+        except ValueError:
+            amount = None
+    squad_verification = _verify_squad_receipt_against_squad(reference=reference, expected_amount=amount)
+    linked = None
+    linked_type = None
+    verification_state = "unlinked"
+    if reference:
+        candidate_refs = [reference]
+        provider_reference = str((squad_verification or {}).get("provider_transaction_ref") or "").strip()
+        verified_reference = str((squad_verification or {}).get("reference") or "").strip()
+        for candidate in [provider_reference, verified_reference]:
+            if candidate and candidate not in candidate_refs:
+                candidate_refs.append(candidate)
+        for candidate_ref in candidate_refs:
+            linked = (
+                db.find_one("dues_payments", {"workspace_id": message.workspace_id, "gateway_ref": candidate_ref})
+                or db.find_one("dues_payments", {"workspace_id": message.workspace_id, "provider_transaction_ref": candidate_ref})
+                or db.find_one("contributions", {"workspace_id": message.workspace_id, "gateway_ref": candidate_ref})
+                or db.find_one("contributions", {"workspace_id": message.workspace_id, "provider_transaction_ref": candidate_ref})
+            )
+            if linked:
+                break
+        if linked:
+            linked_type = "dues_payment" if linked.get("cycle_id") else "contribution"
+            verification_state = "matched" if (squad_verification or {}).get("status") == "verified" else "needs_review"
+    if not linked and amount is not None:
+        linked = db.find_one("contributions", {"workspace_id": message.workspace_id, "amount": amount}) or db.find_one(
+            "dues_payments", {"workspace_id": message.workspace_id, "amount": amount}
+        )
+        if linked:
+            linked_type = "contribution" if linked.get("campaign_id") is not None or linked.get("donor_name") is not None else "dues_payment"
+            verification_state = "needs_review"
+
+    if not linked:
+        inferred = _infer_financial_target(db, message=message, payload=payload, amount=amount)
+        if inferred:
+            linked = inferred["record"]
+            linked_type = inferred["record_type"]
+            verification_state = "needs_review"
+
+    if squad_verification:
+        status = str(squad_verification.get("status") or "").strip().lower()
+        if status == "verified":
+            verification_state = "matched" if linked and linked_type in {"dues_payment", "contribution"} else "needs_review"
+        elif status in {"amount_mismatch", "reference_not_confirmed"}:
+            verification_state = "needs_review"
+        elif status == "reference_not_found" and verification_state == "unlinked":
+            verification_state = "unlinked"
+
+    return db.insert(
+        "community_financial_records",
+        {
+            "workspace_id": message.workspace_id,
+            "message_id": message.id,
+            "artifact_id": artifact.id,
+            "kind": artifact.artifact_type,
+            "amount": amount,
+            "payer": payload.get("payer") or payload.get("contributor_name"),
+            "reference": reference,
+            "bank": payload.get("bank"),
+            "transaction_date": payload.get("transaction_date"),
+            "linked_record_type": linked_type,
+            "linked_record_id": linked.id if linked else None,
+            "verification_state": verification_state,
+            "linked_record_label": _financial_record_label(db, record_type=linked_type, record=linked) if linked else None,
+            "provider_name": "squad" if squad_verification else None,
+            "provider_verification_status": (squad_verification or {}).get("status"),
+            "provider_verification_note": (squad_verification or {}).get("note"),
+            "provider_verified_amount": (squad_verification or {}).get("amount"),
+            "provider_verified_reference": (squad_verification or {}).get("reference"),
+            "provider_transaction_ref": (squad_verification or {}).get("provider_transaction_ref"),
+            "attachment_name": (message.get("raw_payload") or {}).get("attachment_name"),
+            "attachment_text_excerpt": payload.get("attachment_text_excerpt"),
+            "payment_for": payload.get("payment_for") or payload.get("cycle_hint"),
+        },
+    )
+
+
+def _verify_squad_receipt_against_squad(*, reference: str | None, expected_amount: float | None) -> dict[str, object] | None:
+    normalized_reference = str(reference or "").strip()
+    if not normalized_reference or not squad_configured():
+        return None
+    try:
+        verification = verify_squad_transaction(normalized_reference)
+    except PaymentInitializationError:
+        return {
+            "status": "verification_unavailable",
+            "note": "Live Squad verification is unavailable right now.",
+            "reference": normalized_reference,
+        }
+    if not verification:
+        return {
+            "status": "verification_unavailable",
+            "note": "Live Squad verification is unavailable right now.",
+            "reference": normalized_reference,
+        }
+
+    verification_status = str(verification.status or "").strip().lower()
+    result: dict[str, object] = {
+        "reference": verification.reference or normalized_reference,
+        "provider_transaction_ref": verification.provider_transaction_ref,
+        "amount": verification.amount,
+    }
+    if verification_status not in {"success", "successful", "paid", "approved"}:
+        return {
+            **result,
+            "status": "reference_not_confirmed" if verification_status != "unknown" else "reference_not_found",
+            "note": f"Squad returned status: {verification_status.replace('_', ' ')}." if verification_status != "unknown" else "Squad could not confirm this reference.",
+        }
+    if expected_amount is not None and verification.amount is not None and abs(float(verification.amount) - float(expected_amount)) >= 0.01:
+        return {
+            **result,
+            "status": "amount_mismatch",
+            "note": f"Squad found this reference, but the verified amount was NGN {float(verification.amount):,.0f}.",
+        }
+    return {
+        **result,
+        "status": "verified",
+        "note": f"Matched against Squad transaction data for NGN {float(verification.amount or expected_amount or 0):,.0f}.",
+    }
+
+
+def _infer_financial_target(db: MongoStore, *, message, payload: dict, amount: float | None):
+    workspace_id = message.workspace_id
+    context_text = " ".join(
+        [
+            str(message.get("text") or ""),
+            str(payload.get("payment_for") or ""),
+            str(payload.get("attachment_text_excerpt") or ""),
+            str(payload.get("raw_excerpt") or ""),
+            str(payload.get("cycle_hint") or ""),
+        ]
+    ).strip()
+    lowered = context_text.lower()
+    member = _find_member_candidate(db, workspace_id=workspace_id, payload=payload, message=message, lowered=lowered)
+    cycle = _find_dues_cycle_candidate(db, workspace_id=workspace_id, lowered=lowered)
+    if cycle and member:
+        payment = _find_dues_payment_candidate(db, workspace_id=workspace_id, cycle_id=cycle.id, member_id=member.id, amount=amount)
+        if payment:
+            return {"record": payment, "record_type": "dues_payment", "verification_state": "matched_existing_record"}
+        return {"record": cycle, "record_type": "dues_cycle", "verification_state": "matched_due_cycle"}
+
+    contribution = _find_contribution_candidate(db, workspace_id=workspace_id, payload=payload, lowered=lowered, amount=amount)
+    if contribution:
+        return {"record": contribution, "record_type": "contribution", "verification_state": "matched_existing_record"}
+
+    campaign = _find_campaign_candidate(db, workspace_id=workspace_id, lowered=lowered)
+    if campaign:
+        return {"record": campaign, "record_type": "campaign", "verification_state": "matched_campaign"}
+    return None
+
+
+def _find_member_candidate(db: MongoStore, *, workspace_id: int, payload: dict, message, lowered: str):
+    candidates = [
+        str(payload.get("payer") or "").strip(),
+        str(payload.get("contributor_name") or "").strip(),
+        str(message.get("sender_name") or "").strip(),
+    ]
+    memberships = db.find_many("workspace_members", {"workspace_id": workspace_id, "status": "active"})
+    for membership in memberships:
+        user = db.find_by_id("users", membership.user_id)
+        if not user:
+            continue
+        full_name = str(user.get("full_name") or "").strip()
+        if not full_name:
+            continue
+        name_tokens = [token for token in re.findall(r"[a-z0-9]{3,}", full_name.lower()) if token]
+        if any(candidate and candidate.lower() in full_name.lower() for candidate in candidates):
+            return membership
+        if name_tokens and all(token in lowered for token in name_tokens[:2]):
+            return membership
+    return None
+
+
+def _find_dues_cycle_candidate(db: MongoStore, *, workspace_id: int, lowered: str):
+    cycles = db.find_many("dues_cycles", {"workspace_id": workspace_id})
+    best = None
+    best_score = 0
+    for cycle in cycles:
+        cycle_name = str(cycle.get("name") or "").strip().lower()
+        if not cycle_name:
+            continue
+        tokens = [token for token in re.findall(r"[a-z0-9]{3,}", cycle_name) if token]
+        score = sum(1 for token in tokens if token in lowered)
+        if cycle_name in lowered:
+            score += 3
+        if score > best_score:
+            best = cycle
+            best_score = score
+    return best if best_score > 0 else None
+
+
+def _find_dues_payment_candidate(db: MongoStore, *, workspace_id: int, cycle_id: int, member_id: int, amount: float | None):
+    payments = db.find_many("dues_payments", {"workspace_id": workspace_id, "cycle_id": cycle_id, "member_id": member_id}, sort=[("created_at", DESC)], limit=8)
+    if amount is None:
+        return payments[0] if payments else None
+    for payment in payments:
+        try:
+            if abs(float(payment.get("amount") or 0) - amount) < 0.01:
+                return payment
+        except (TypeError, ValueError):
+            continue
+    return payments[0] if payments else None
+
+
+def _find_contribution_candidate(db: MongoStore, *, workspace_id: int, payload: dict, lowered: str, amount: float | None):
+    contributions = db.find_many("contributions", {"workspace_id": workspace_id}, sort=[("created_at", DESC)], limit=20)
+    best = None
+    best_score = -1
+    payer = str(payload.get("payer") or payload.get("contributor_name") or "").strip().lower()
+    for contribution in contributions:
+        score = 0
+        contributor_name = str(contribution.get("contributor_name") or "").strip().lower()
+        if amount is not None:
+            try:
+                if abs(float(contribution.get("amount") or 0) - amount) < 0.01:
+                    score += 3
+            except (TypeError, ValueError):
+                pass
+        if payer and contributor_name and payer in contributor_name:
+            score += 3
+        stream = db.find_by_id("funding_streams", contribution.get("stream_id"))
+        campaign = db.find_by_id("campaigns", contribution.get("campaign_id"))
+        for label in [str(stream.get("name") or "") if stream else "", str(campaign.get("name") or "") if campaign else ""]:
+            normalized = label.strip().lower()
+            if normalized and normalized in lowered:
+                score += 2
+        if score > best_score:
+            best = contribution
+            best_score = score
+    return best if best_score > 1 else None
+
+
+def _find_campaign_candidate(db: MongoStore, *, workspace_id: int, lowered: str):
+    campaigns = db.find_many("campaigns", {"workspace_id": workspace_id})
+    best = None
+    best_score = 0
+    for campaign in campaigns:
+        name = str(campaign.get("name") or "").strip().lower()
+        if not name:
+            continue
+        score = 3 if name in lowered else sum(1 for token in re.findall(r"[a-z0-9]{3,}", name) if token in lowered)
+        if score > best_score:
+            best = campaign
+            best_score = score
+    return best if best_score > 0 else None
+
+
+def _financial_record_label(db: MongoStore, *, record_type: str | None, record) -> str | None:
+    if not record_type or not record:
+        return None
+    if record_type == "dues_payment":
+        cycle = db.find_by_id("dues_cycles", record.get("cycle_id"))
+        return f"Dues payment · {cycle.name}" if cycle else "Dues payment"
+    if record_type == "dues_cycle":
+        return f"Dues cycle · {record.get('name') or 'Untitled'}"
+    if record_type == "contribution":
+        campaign = db.find_by_id("campaigns", record.get("campaign_id"))
+        return f"Contribution · {campaign.name}" if campaign else "Contribution"
+    if record_type == "campaign":
+        return f"Campaign · {record.get('name') or 'Untitled'}"
+    return None
+
+
+def _notify_for_high_value_artifact(db: MongoStore, *, artifact, message, group_name: str | None = None):
+    if artifact.get("status") not in {"ready", "needs_review"}:
+        return
+    artifact_type = str(artifact.get("artifact_type") or "other")
+    payload = artifact.get("extracted_payload") or {}
+    amount = None
+    raw_amount = payload.get("amount")
+    if raw_amount not in (None, ""):
+        try:
+            amount = float(str(raw_amount).replace(",", ""))
+        except ValueError:
+            amount = None
+    is_high_value = artifact_type in {"disbursement_request", "opportunity"} or (
+        artifact_type in {"payment_receipt", "contribution_signal"} and amount is not None and amount >= 25000
+    )
+    text_lowered = str(message.get("text") or "").lower()
+    if artifact_type in {"payment_receipt", "contribution_signal"} and any(keyword in text_lowered for keyword in {"repayment", "loan", "installment", "settlement"}):
+        is_high_value = True
+    if not is_high_value:
+        return
+    title_map = {
+        "payment_receipt": "High-value receipt captured",
+        "contribution_signal": "High-value contribution signal",
+        "opportunity": "Priority opportunity extracted",
+        "disbursement_request": "Disbursement request extracted",
+    }
+    body_parts = [group_name or message.get("external_group_id") or "Synced group"]
+    if amount is not None:
+        body_parts.append(f"NGN {amount:,.0f}")
+    body_parts.append(str(message.get("text") or "")[:120])
+    notify_workspace_admins(
+        db,
+        workspace_id=message.workspace_id,
+        title=title_map.get(artifact_type, "Important community signal"),
+        body=" · ".join(part for part in body_parts if part),
+        notification_type="community_signal",
+        action_url=f"/{db.find_by_id('workspaces', message.workspace_id).slug}/community-inbox" if db.find_by_id("workspaces", message.workspace_id) else None,
+        metadata={"artifact_type": artifact_type, "message_id": message.id, "artifact_id": artifact.id},
+        dedupe_key=f"artifact:{artifact.id}",
+    )
 
 
 def _gateway_config_out(channel, selected_groups: list[str]) -> schemas.WhatsAppGatewayConfigOut:
@@ -384,7 +811,90 @@ def _artifact_out(artifact) -> schemas.MessageArtifactOut:
     )
 
 
-def _highlight_out(message, artifact, *, group_name: str | None = None) -> schemas.CommunityHighlightOut:
+def _audit_trail_out(db: MongoStore, *, workspace_id: int, limit: int = 12) -> list[schemas.CommunityInboxAuditItemOut]:
+    items: list[schemas.CommunityInboxAuditItemOut] = []
+    reviewed_artifacts = db.find_many(
+        "message_artifacts",
+        {"workspace_id": workspace_id, "reviewed_at": {"$ne": None}},
+        sort=[("reviewed_at", DESC)],
+        limit=limit,
+    )
+    for artifact in reviewed_artifacts:
+        actor = db.find_one("users", {"id": artifact.get("reviewed_by_user_id")}) if artifact.get("reviewed_by_user_id") else None
+        items.append(
+            schemas.CommunityInboxAuditItemOut(
+                item_type="artifact_review",
+                title=f"{str(artifact.get('status') or 'reviewed').replace('_', ' ').title()} {str(artifact.get('artifact_type') or 'signal').replace('_', ' ')}",
+                detail=artifact.get("review_note") or artifact.get("summary") or "Community signal reviewed.",
+                actor_name=actor.full_name if actor else None,
+                created_at=artifact.get("reviewed_at") or artifact.created_at,
+            )
+        )
+
+    created_tasks = db.find_many(
+        "tasks",
+        {"workspace_id": workspace_id, "linked_module": "community_artifact"},
+        sort=[("created_at", DESC)],
+        limit=limit,
+    )
+    for task in created_tasks:
+        creator = db.find_one("users", {"id": task.get("created_by_user_id")}) if task.get("created_by_user_id") else None
+        assignee_name = None
+        if task.get("assigned_to_member_id"):
+            assignee_member = db.find_by_id("workspace_members", task.get("assigned_to_member_id"))
+            assignee_user = db.find_by_id("users", assignee_member.user_id) if assignee_member else None
+            assignee_name = assignee_user.full_name if assignee_user else None
+        detail = f"Task created from community signal: {task.get('title') or 'Untitled task'}"
+        if assignee_name:
+            detail = f"{detail} · Assigned to {assignee_name}"
+        items.append(
+            schemas.CommunityInboxAuditItemOut(
+                item_type="task_creation",
+                title="Task created from inbox",
+                detail=detail,
+                actor_name=creator.full_name if creator else None,
+                created_at=task.created_at,
+            )
+        )
+
+    return sorted(items, key=lambda item: item.created_at, reverse=True)[:limit]
+
+
+def _task_out(db: MongoStore, task) -> schemas.TaskOut:
+    member = db.find_by_id("workspace_members", task.get("assigned_to_member_id"))
+    user = db.find_by_id("users", member.user_id) if member else None
+    return schemas.TaskOut(
+        id=task.id,
+        workspace_id=task.workspace_id,
+        title=task.title,
+        description=task.get("description"),
+        assigned_to_member_id=task.get("assigned_to_member_id"),
+        assigned_to_name=user.full_name if user else None,
+        due_date=task.get("due_date"),
+        priority=task.get("priority", "medium"),
+        status=task.get("status", "todo"),
+        linked_module=task.get("linked_module"),
+        linked_id=task.get("linked_id"),
+        created_by_user_id=task.get("created_by_user_id"),
+        created_at=task.created_at,
+    )
+
+
+def _highlight_out(db: MongoStore, message, artifact, *, group_name: str | None = None) -> schemas.CommunityHighlightOut:
+    financial_record = db.find_one(
+        "community_financial_records",
+        {"workspace_id": message.workspace_id, "message_id": message.id, "artifact_id": artifact.id},
+    )
+    linked_task = db.find_one(
+        "tasks",
+        {"workspace_id": message.workspace_id, "linked_module": "community_artifact", "linked_id": artifact.id},
+    )
+    suggested_assignee = suggest_task_assignee(
+        db,
+        workspace_id=message.workspace_id,
+        text=message.text,
+        extracted_payload=artifact.get("extracted_payload") or {},
+    ) if artifact.artifact_type == "task_signal" and not linked_task else None
     return schemas.CommunityHighlightOut(
         message_id=message.id,
         workspace_id=message.workspace_id,
@@ -406,6 +916,16 @@ def _highlight_out(message, artifact, *, group_name: str | None = None) -> schem
         reviewed_at=artifact.get("reviewed_at"),
         reviewed_by_user_id=artifact.get("reviewed_by_user_id"),
         review_note=artifact.get("review_note"),
+        linked_record_type=financial_record.get("linked_record_type") if financial_record else None,
+        linked_record_label=financial_record.get("linked_record_label") if financial_record else None,
+        verification_state=financial_record.get("verification_state") if financial_record else None,
+        provider_verification_status=financial_record.get("provider_verification_status") if financial_record else None,
+        provider_verification_note=financial_record.get("provider_verification_note") if financial_record else None,
+        provider_verified_amount=float(financial_record.get("provider_verified_amount") or 0) if financial_record and financial_record.get("provider_verified_amount") is not None else None,
+        linked_task_id=linked_task.id if linked_task else None,
+        linked_task_title=linked_task.get("title") if linked_task else None,
+        suggested_assignee_member_id=suggested_assignee.get("member_id") if suggested_assignee else None,
+        suggested_assignee_name=suggested_assignee.get("member_name") if suggested_assignee else None,
         created_at=artifact.created_at,
     )
 
@@ -458,7 +978,11 @@ async def _discover_telegram_groups(db: MongoStore, channel) -> int:
 async def _refresh_whatsapp_channel_status(db: MongoStore, channel):
     try:
         payload = await _whatsapp_gateway_request("GET", f"/internal/sessions/{channel.id}")
-    except HTTPException:
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        if exc.status_code == 503 and "session_not_found" in detail:
+            _clear_whatsapp_session_fields(channel, status="disconnected", last_error="WhatsApp session not active. Reconnect to resume live sync.")
+            db.save("community_channels", channel)
         return channel
     _apply_whatsapp_gateway_status(channel, payload)
     db.save("community_channels", channel)
@@ -877,22 +1401,11 @@ async def sync_whatsapp_channel(
     channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
     if not channel:
         raise HTTPException(status_code=404, detail="WhatsApp channel not found")
-    selected_group_count = db.count(
-        "channel_group_links",
-        {"workspace_id": workspace_id, "channel_id": channel_id, "sync_enabled": True},
-    )
-    if not selected_group_count:
-        return schemas.ChannelSyncResultOut(message="No WhatsApp groups have sync enabled yet.")
-
-    payload = await _whatsapp_gateway_request("POST", f"/internal/sessions/{channel.id}/sync-history", {})
     channel = await _refresh_whatsapp_channel_status(db, channel)
-    channel["last_error"] = None
-    channel["updated_at"] = datetime.utcnow()
-    db.save("community_channels", channel)
     return schemas.ChannelSyncResultOut(
-        message="WhatsApp history import complete.",
+        message="WhatsApp is now in live-only mode. New messages in enabled groups will sync automatically.",
         discovered_groups=int(channel.get("discovered_group_count") or 0),
-        synced_messages=int(payload.get("syncedMessages") or 0),
+        synced_messages=0,
     )
 
 
@@ -907,12 +1420,25 @@ async def disconnect_whatsapp_channel_session(
     if not channel:
         raise HTTPException(status_code=404, detail="WhatsApp channel not found")
     await _whatsapp_gateway_request("POST", f"/internal/sessions/{channel.id}/disconnect", {})
-    channel["status"] = "disconnected"
-    channel["qr_code_data_url"] = None
-    channel["last_error"] = None
-    channel["updated_at"] = datetime.utcnow()
+    _clear_whatsapp_session_fields(channel, status="disconnected")
     db.save("community_channels", channel)
     return schemas.AuthStatusResponse(message="WhatsApp session disconnected.")
+
+
+@router.post("/{channel_id}/whatsapp/session/reset", response_model=schemas.AuthStatusResponse)
+async def reset_whatsapp_channel_session(
+    workspace_id: int,
+    channel_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    channel = db.find_one("community_channels", {"workspace_id": workspace_id, "id": channel_id, "provider": "whatsapp"})
+    if not channel:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found")
+    await _whatsapp_gateway_request("POST", f"/internal/sessions/{channel.id}/reset", {})
+    _clear_whatsapp_session_fields(channel, status="configured")
+    db.save("community_channels", channel)
+    return schemas.AuthStatusResponse(message="WhatsApp session reset. Scan a fresh QR code to reconnect.")
 
 
 @router.delete("/{channel_id}", response_model=schemas.AuthStatusResponse)
@@ -1053,7 +1579,7 @@ def get_community_inbox_feed(
         if not message:
             continue
         group = db.find_by_id("channel_group_links", message.get("group_link_id"))
-        highlight = _highlight_out(message, artifact, group_name=group.group_name if group else None)
+        highlight = _highlight_out(db, message, artifact, group_name=group.group_name if group else None)
         if highlight.message_id not in seen_highlight_messages and len(highlights) < 80:
             highlights.append(highlight)
             seen_highlight_messages.add(highlight.message_id)
@@ -1070,6 +1596,7 @@ def get_community_inbox_feed(
     return schemas.CommunityInboxFeedOut(
         highlights=highlights,
         review_queue=review_queue,
+        audit_trail=_audit_trail_out(db, workspace_id=workspace_id),
         refreshed_at=datetime.utcnow(),
     )
 
@@ -1087,6 +1614,38 @@ def list_review_queue(
         limit=100,
     )
     return [_artifact_out(artifact) for artifact in artifacts]
+
+
+@router.post("/artifacts/review-bulk", response_model=list[schemas.MessageArtifactOut])
+def bulk_review_artifacts(
+    workspace_id: int,
+    payload: schemas.ArtifactBulkReviewRequest,
+    db: MongoStore = Depends(get_db),
+    membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    results: list[schemas.MessageArtifactOut] = []
+    for artifact_id in payload.artifact_ids[:50]:
+        artifact = db.find_one("message_artifacts", {"workspace_id": workspace_id, "id": artifact_id})
+        if not artifact:
+            continue
+        if payload.action == "approve":
+            message = db.find_one("channel_messages", {"workspace_id": workspace_id, "id": artifact.message_id})
+            if not message:
+                continue
+            artifact["status"] = "approved"
+            artifact["reviewed_at"] = datetime.utcnow()
+            artifact["reviewed_by_user_id"] = membership.user_id
+            artifact["review_note"] = artifact.get("review_note")
+            db.save("message_artifacts", artifact)
+            _apply_artifact_outcome(db, artifact=artifact, message=message)
+        else:
+            artifact["status"] = "rejected"
+            artifact["reviewed_at"] = datetime.utcnow()
+            artifact["reviewed_by_user_id"] = membership.user_id
+            artifact["review_note"] = artifact.get("review_note")
+            db.save("message_artifacts", artifact)
+        results.append(_artifact_out(artifact))
+    return results
 
 
 @router.post("/messages/{message_id}/analyze", response_model=schemas.MessageArtifactOut)
@@ -1144,6 +1703,47 @@ def reject_message_artifact(
     artifact["review_note"] = payload.note.strip() if payload.note else None
     db.save("message_artifacts", artifact)
     return _artifact_out(artifact)
+
+
+@router.post("/artifacts/{artifact_id}/create-task", response_model=schemas.TaskOut, status_code=201)
+def create_task_from_artifact(
+    workspace_id: int,
+    artifact_id: int,
+    payload: schemas.CommunityArtifactTaskCreateRequest,
+    db: MongoStore = Depends(get_db),
+    membership=Depends(require_workspace_permission("tasks.assign")),
+):
+    artifact = db.find_one("message_artifacts", {"workspace_id": workspace_id, "id": artifact_id})
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    message = db.find_one("channel_messages", {"workspace_id": workspace_id, "id": artifact.message_id})
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found for artifact")
+
+    existing = db.find_one("tasks", {"workspace_id": workspace_id, "linked_module": "community_artifact", "linked_id": artifact_id})
+    if existing:
+        return _task_out(db, existing)
+
+    task = _create_or_update_task_from_artifact(
+        db,
+        artifact=artifact,
+        message=message,
+        created_by_user_id=membership.user_id,
+        override_assignee_member_id=payload.assigned_to_member_id,
+        override_due_date=payload.due_date,
+        override_priority=payload.priority,
+        note=payload.note,
+    )
+    if payload.title:
+        task["title"] = payload.title.strip()[:180]
+        db.save("tasks", task)
+    artifact["status"] = "approved"
+    artifact["reviewed_at"] = datetime.utcnow()
+    artifact["reviewed_by_user_id"] = membership.user_id
+    artifact["review_note"] = payload.note.strip() if payload.note else artifact.get("review_note")
+    db.save("message_artifacts", artifact)
+
+    return _task_out(db, task)
 
 
 @inbound_router.post("/telegram/{channel_id}/webhook", name="telegram_channel_webhook")

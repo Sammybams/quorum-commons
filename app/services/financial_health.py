@@ -38,12 +38,20 @@ def build_financial_health_snapshot(db: MongoStore, *, workspace) -> dict:
     total_matches = db.count("opportunity_matches", {"workspace_id": workspace_id})
     opportunity_score = min(10.0, (open_opportunities * 1.4) + min(total_matches, 12) * 0.45)
 
+    community_receipts = db.count(
+        "community_financial_records",
+        {"workspace_id": workspace_id, "verification_state": {"$in": ["matched", "needs_review", "unlinked"]}},
+    )
+    receipt_score = min(10.0, min(community_receipts, 15) * 0.6)
+    evidence_trail = _build_evidence_trail(db, workspace_id=workspace_id)
+
     categories = [
         _category("collections", "Collections discipline", dues_ratio * 10.0, _collections_summary(dues_ratio, collection_ratio)),
         _category("verified_inflows", "Verified inflows", collection_ratio * 10.0, _inflow_summary(confirmed_dues, confirmed_contributions, total_dues + total_contributions)),
         _category("governance", "Governance activity", governance_score, _governance_summary(governance_events)),
         _category("community_signals", "Community signals", signal_score, _signal_summary(actionable_artifacts, total_artifacts)),
         _category("opportunity_access", "Opportunity access", opportunity_score, _opportunity_summary(open_opportunities, total_matches)),
+        _category("receipt_trail", "Receipt trail", receipt_score, _receipt_summary(community_receipts)),
     ]
 
     overall_score = round(
@@ -52,7 +60,8 @@ def build_financial_health_snapshot(db: MongoStore, *, workspace) -> dict:
             + categories[1]["score"] * 0.20
             + categories[2]["score"] * 0.20
             + categories[3]["score"] * 0.15
-            + categories[4]["score"] * 0.15
+            + categories[4]["score"] * 0.10
+            + categories[5]["score"] * 0.05
         ),
         2,
     )
@@ -77,13 +86,46 @@ def build_financial_health_snapshot(db: MongoStore, *, workspace) -> dict:
             {"key": "verified_collections", "label": "Verified collections", "value": f"{confirmed_dues + confirmed_contributions}", "trend": _trend_label(collection_ratio * 10.0)},
             {"key": "actionable_signals", "label": "Actionable signals", "value": str(actionable_artifacts), "trend": _trend_label(signal_score)},
             {"key": "member_matches", "label": "Opportunity matches", "value": str(total_matches), "trend": _trend_label(opportunity_score)},
+            {"key": "community_receipts", "label": "Receipt trail", "value": str(community_receipts), "trend": _trend_label(receipt_score)},
         ],
+        "evidence_trail": evidence_trail,
         "created_at": datetime.utcnow(),
     }
 
 
 def store_financial_health_snapshot(db: MongoStore, *, snapshot: dict) -> dict:
     return db.insert("financial_health_snapshots", snapshot)
+
+
+def list_financial_health_history(db: MongoStore, *, workspace_id: int, limit: int = 8) -> list[dict]:
+    return list(reversed(db.find_many("financial_health_snapshots", {"workspace_id": workspace_id}, sort=[("created_at", -1)], limit=limit)))
+
+
+def build_partner_profile(*, snapshot: dict, history: list[dict]) -> dict:
+    current = float(snapshot.get("overall_score") or 0)
+    previous = float(history[-2].get("overall_score") or current) if len(history) > 1 else current
+    delta = round(current - previous, 2)
+    direction = "improving" if delta > 0.2 else "softening" if delta < -0.2 else "steady"
+    if current >= 8:
+        confidence_label = "High confidence"
+        headline = "This community shows a credible operating record."
+        next_step = "Advance to a deeper underwriting or partnership review."
+    elif current >= 6:
+        confidence_label = "Moderate confidence"
+        headline = "This community is building a usable financial record."
+        next_step = "Request another reporting cycle and verify continuity of inflows."
+    else:
+        confidence_label = "Emerging confidence"
+        headline = "This community needs a stronger operating trail."
+        next_step = "Keep monitoring collections, governance records, and community receipts before escalation."
+    return {
+        "headline": headline,
+        "confidence_label": confidence_label,
+        "summary": f"Overall score is {current:.1f}/10 and the recent direction is {direction}. Community receipts, verified inflows, and governance activity are now part of the profile.",
+        "strengths": list(snapshot.get("strengths") or [])[:3],
+        "watchouts": list(snapshot.get("watchouts") or [])[:3],
+        "recommended_next_step": next_step,
+    }
 
 
 def _category(key: str, title: str, score: float, summary: str) -> dict:
@@ -143,6 +185,61 @@ def _signal_summary(actionable_artifacts: int, total_artifacts: int) -> str:
 
 def _opportunity_summary(open_opportunities: int, total_matches: int) -> str:
     return f"{open_opportunities} open opportunities have produced {total_matches} member match suggestions so far."
+
+
+def _receipt_summary(community_receipts: int) -> str:
+    return f"{community_receipts} receipt or contribution-proof signals have been captured from community channels so far."
+
+
+def _build_evidence_trail(db: MongoStore, *, workspace_id: int, limit: int = 8) -> list[dict]:
+    evidence: list[dict] = []
+
+    for record in db.find_many("community_financial_records", {"workspace_id": workspace_id}, sort=[("created_at", -1)], limit=limit):
+        amount = record.get("amount")
+        amount_label = ""
+        if amount not in (None, ""):
+            try:
+                amount_label = f"NGN {float(amount):,.0f}"
+            except (TypeError, ValueError):
+                amount_label = str(amount)
+        payment_for = str(record.get("payment_for") or "").strip()
+        detail_parts = [part for part in [amount_label, payment_for or None] if part]
+        evidence.append(
+            {
+                "evidence_type": "community_receipt",
+                "title": "Community receipt signal",
+                "detail": " · ".join(detail_parts) or "Receipt or contribution proof captured from community channels.",
+                "linked_record_label": record.get("linked_record_label"),
+                "verification_state": record.get("verification_state"),
+                "created_at": record.get("created_at") or datetime.utcnow(),
+            }
+        )
+
+    for payment in db.find_many("dues_payments", {"workspace_id": workspace_id, "status": {"$in": ["confirmed", "success", "paid"]}}, sort=[("created_at", -1)], limit=3):
+        evidence.append(
+            {
+                "evidence_type": "dues_payment",
+                "title": "Verified dues payment",
+                "detail": f"NGN {float(payment.get('amount') or 0):,.0f} confirmed in platform records.",
+                "linked_record_label": "Dues payment",
+                "verification_state": "matched",
+                "created_at": payment.get("created_at") or datetime.utcnow(),
+            }
+        )
+
+    for contribution in db.find_many("contributions", {"workspace_id": workspace_id, "status": {"$in": ["confirmed", "success", "paid"]}}, sort=[("created_at", -1)], limit=3):
+        evidence.append(
+            {
+                "evidence_type": "campaign_contribution",
+                "title": "Verified contribution",
+                "detail": f"NGN {float(contribution.get('amount') or 0):,.0f} confirmed toward campaign inflows.",
+                "linked_record_label": "Contribution",
+                "verification_state": "matched",
+                "created_at": contribution.get("created_at") or datetime.utcnow(),
+            }
+        )
+
+    return sorted(evidence, key=lambda item: item.get("created_at") or datetime.utcnow(), reverse=True)[:limit]
 
 
 def _count_status(records: list, good_statuses: set[str]) -> int:

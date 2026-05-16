@@ -27,11 +27,20 @@ type Opportunity = {
   id: number;
   title: string;
   description: string;
+  summary?: string | null;
+  organization?: string | null;
   location?: string | null;
+  venue?: string | null;
   trade_tags: string[];
+  key_points: string[];
+  event_date?: string | null;
   deadline?: string | null;
   contact?: string | null;
+  action_url?: string | null;
+  source_excerpt?: string | null;
   status: string;
+  outcome_note?: string | null;
+  closed_at?: string | null;
   match_count: number;
   matches: OpportunityMatch[];
   my_match?: OpportunityMatch | null;
@@ -55,6 +64,7 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [respondingKey, setRespondingKey] = useState<string | null>(null);
   const [updatingMatchKey, setUpdatingMatchKey] = useState<string | null>(null);
+  const [updatingOpportunityId, setUpdatingOpportunityId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
 
@@ -156,6 +166,25 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
     }
   }
 
+  async function updateOpportunityStatus(opportunityId: number, status: "in_progress" | "filled" | "closed") {
+    if (!workspace) {
+      return;
+    }
+    setUpdatingOpportunityId(opportunityId);
+    setError(null);
+    try {
+      const updated = await apiPost<Opportunity, { status: "in_progress" | "filled" | "closed" }>(
+        `/workspaces/${workspace.id}/opportunities/${opportunityId}/status`,
+        { status },
+      );
+      setOpportunities((current) => current.map((item) => (item.id === opportunityId ? updated : item)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update the opportunity outcome.");
+    } finally {
+      setUpdatingOpportunityId(null);
+    }
+  }
+
   const recommendedForMe = useMemo(
     () =>
       opportunities.filter(
@@ -173,6 +202,10 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
 
   function humanizeStatus(value: string) {
     const map: Record<string, string> = {
+      open: "Open",
+      in_progress: "In progress",
+      filled: "Filled",
+      closed: "Closed",
       recommended: "Recommended",
       interested: "Interested",
       contacted: "Contacted",
@@ -183,35 +216,100 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
   }
 
   function statusTone(value: string) {
-    if (value === "assigned") return "ok";
-    if (value === "interested" || value === "contacted") return "pending";
+    if (value === "assigned" || value === "filled") return "ok";
+    if (value === "interested" || value === "contacted" || value === "in_progress") return "pending";
     if (value === "passed") return "danger";
     return "";
   }
 
+  function cleanSourceText(value: string) {
+    return value.replace(/[*_~`]+/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  function fallbackSummary(opportunity: Opportunity) {
+    const cleaned = cleanSourceText(opportunity.description || "");
+    const withoutTitle = cleaned.startsWith(cleanSourceText(opportunity.title))
+      ? cleaned.slice(cleanSourceText(opportunity.title).length).trim()
+      : cleaned;
+    const candidate = withoutTitle || cleaned;
+    if (candidate.length <= 220) {
+      return candidate;
+    }
+    const excerpt = candidate.slice(0, 220);
+    const lastSpace = excerpt.lastIndexOf(" ");
+    const trimmed = (lastSpace > 0 ? excerpt.slice(0, lastSpace) : excerpt).trim();
+    return `${trimmed || candidate.slice(0, 220)}...`;
+  }
+
   function renderOpportunityCard(opportunity: Opportunity, mode: "admin" | "member") {
     const myMatch = opportunity.my_match || null;
+    const detailChips = [
+      opportunity.organization ? `By ${opportunity.organization}` : null,
+      opportunity.venue ? `Venue: ${opportunity.venue}` : null,
+      opportunity.location ? `Location: ${opportunity.location}` : null,
+      opportunity.event_date ? `When: ${opportunity.event_date}` : null,
+      opportunity.deadline ? `Deadline: ${opportunity.deadline}` : null,
+      opportunity.contact ? `Contact: ${opportunity.contact}` : null,
+    ].filter(Boolean) as string[];
+
     return (
       <article key={opportunity.id} className="panel-card">
         <div className="card-head compact">
           <div>
             <h2>{opportunity.title}</h2>
-            <p>{opportunity.location || "Location not specified"}</p>
+            <p>{opportunity.organization || opportunity.venue || opportunity.location || "Community opportunity"}</p>
           </div>
           {mode === "admin" ? (
-            <span className="status-pill ok">{opportunity.match_count} matches</span>
+            <div className="opportunity-admin-actions">
+              {opportunity.action_url ? (
+                <a href={opportunity.action_url} target="_blank" rel="noreferrer" className="btn-secondary">
+                  Open
+                </a>
+              ) : null}
+              <span className={`status-pill ${statusTone(opportunity.status)}`}>{humanizeStatus(opportunity.status)}</span>
+              <span className="status-pill ok">{opportunity.match_count} matches</span>
+            </div>
           ) : myMatch ? (
-            <span className={`status-pill ${statusTone(myMatch.status)}`}>{humanizeStatus(myMatch.status)}</span>
+            <div className="opportunity-admin-actions">
+              {opportunity.action_url ? (
+                <a href={opportunity.action_url} target="_blank" rel="noreferrer" className="btn-secondary">
+                  Open
+                </a>
+              ) : null}
+              <span className={`status-pill ${statusTone(myMatch.status)}`}>{humanizeStatus(myMatch.status)}</span>
+            </div>
+          ) : opportunity.action_url ? (
+            <div className="opportunity-admin-actions">
+              <a href={opportunity.action_url} target="_blank" rel="noreferrer" className="btn-secondary">
+                Open
+              </a>
+            </div>
           ) : null}
         </div>
-        <p>{opportunity.description}</p>
+        <p>{opportunity.summary || fallbackSummary(opportunity)}</p>
+        {opportunity.key_points?.length ? (
+          <div className="opportunity-point-list">
+            {opportunity.key_points.slice(0, 3).map((point) => (
+              <div key={point} className="opportunity-point">
+                {point}
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="permission-chips">
           {(opportunity.trade_tags || []).slice(0, 6).map((tag) => (
             <span key={tag}>{tag}</span>
           ))}
-          {opportunity.deadline ? <span>Deadline: {opportunity.deadline}</span> : null}
-          {opportunity.contact ? <span>Contact: {opportunity.contact}</span> : null}
+          {detailChips.slice(0, 5).map((chip) => (
+            <span key={chip}>{chip}</span>
+          ))}
         </div>
+        {opportunity.source_excerpt ? (
+          <details className="opportunity-source">
+            <summary>Source message</summary>
+            <p>{cleanSourceText(opportunity.source_excerpt)}</p>
+          </details>
+        ) : null}
 
         {mode === "admin" ? (
           <>
@@ -224,7 +322,38 @@ export default function OpportunitiesPage({ params }: { params: { workspaceSlug:
               >
                 {refreshingId === opportunity.id ? "Refreshing..." : "Refresh matches"}
               </button>
+              {opportunity.status === "open" ? (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={updatingOpportunityId === opportunity.id}
+                  onClick={() => updateOpportunityStatus(opportunity.id, "in_progress")}
+                >
+                  {updatingOpportunityId === opportunity.id ? "Saving..." : "Start work"}
+                </button>
+              ) : null}
+              {opportunity.status !== "filled" ? (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={updatingOpportunityId === opportunity.id}
+                  onClick={() => updateOpportunityStatus(opportunity.id, "filled")}
+                >
+                  {updatingOpportunityId === opportunity.id ? "Saving..." : "Mark filled"}
+                </button>
+              ) : null}
+              {opportunity.status !== "closed" ? (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={updatingOpportunityId === opportunity.id}
+                  onClick={() => updateOpportunityStatus(opportunity.id, "closed")}
+                >
+                  {updatingOpportunityId === opportunity.id ? "Saving..." : "Close"}
+                </button>
+              ) : null}
             </div>
+            {opportunity.outcome_note ? <p className="muted-copy opportunity-member-note">{opportunity.outcome_note}</p> : null}
             <div className="activity-list">
               {opportunity.matches.length ? (
                 opportunity.matches.map((match) => (

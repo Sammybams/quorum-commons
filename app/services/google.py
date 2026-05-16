@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
-from ..email import EmailResult, build_invitation_email
+from ..email import EmailResult, build_invitation_email, build_task_assignment_email
 
 
 load_dotenv()
@@ -231,6 +231,42 @@ def send_gmail_invitation(
         token=token,
         note=note,
         reply_to=reply_to,
+        from_email=connected_email,
+        from_name=sender_name,
+    )
+
+    try:
+        send_gmail_message(access_token=access_token, message=message)
+    except GoogleIntegrationError as exc:
+        return EmailResult(status="failed", error=str(exc)[:500], provider="google", sender=connected_email)
+
+    return EmailResult(status="sent", provider="google", sender=connected_email)
+
+
+def send_gmail_task_assignment(
+    *,
+    access_token: str,
+    connected_email: str,
+    sender_name: str,
+    to_email: str,
+    full_name: str,
+    workspace_name: str,
+    task_title: str,
+    task_description: str | None = None,
+    due_date: str | None = None,
+    action_url: str,
+) -> EmailResult:
+    if not connected_email:
+        return EmailResult(status="failed", error="Connected Google account email was not available.", provider="google")
+
+    message = build_task_assignment_email(
+        to_email=to_email,
+        full_name=full_name,
+        workspace_name=workspace_name,
+        task_title=task_title,
+        task_description=task_description,
+        due_date=due_date,
+        action_url=action_url,
         from_email=connected_email,
         from_name=sender_name,
     )

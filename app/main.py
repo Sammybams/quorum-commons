@@ -18,6 +18,7 @@ from .routers import (
     links,
     meetings,
     members,
+    notifications,
     opportunities,
     public,
     reports,
@@ -66,6 +67,7 @@ app.include_router(dues.payments_router, prefix=api_prefix)
 app.include_router(events.router, prefix=api_prefix)
 app.include_router(campaigns.router, prefix=api_prefix)
 app.include_router(opportunities.router, prefix=api_prefix)
+app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(links.router, prefix=api_prefix)
 app.include_router(announcements.router, prefix=api_prefix)
 app.include_router(tasks.router, prefix=api_prefix)

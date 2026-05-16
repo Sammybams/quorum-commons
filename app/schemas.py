@@ -746,17 +746,41 @@ class CommunityHighlightOut(BaseModel):
     reviewed_at: datetime | None = None
     reviewed_by_user_id: int | None = None
     review_note: str | None = None
+    linked_record_type: str | None = None
+    linked_record_label: str | None = None
+    verification_state: str | None = None
+    provider_verification_status: str | None = None
+    provider_verification_note: str | None = None
+    provider_verified_amount: float | None = None
+    linked_task_id: int | None = None
+    linked_task_title: str | None = None
+    suggested_assignee_member_id: int | None = None
+    suggested_assignee_name: str | None = None
+    created_at: datetime
+
+
+class CommunityInboxAuditItemOut(BaseModel):
+    item_type: str
+    title: str
+    detail: str
+    actor_name: str | None = None
     created_at: datetime
 
 
 class CommunityInboxFeedOut(BaseModel):
     highlights: list[CommunityHighlightOut] = Field(default_factory=list)
     review_queue: list[CommunityHighlightOut] = Field(default_factory=list)
+    audit_trail: list[CommunityInboxAuditItemOut] = Field(default_factory=list)
     refreshed_at: datetime
 
 
 class ArtifactReviewDecisionRequest(BaseModel):
     note: str | None = Field(default=None, max_length=240)
+
+
+class ArtifactBulkReviewRequest(BaseModel):
+    artifact_ids: list[int] = Field(default_factory=list)
+    action: str = Field(pattern="^(approve|reject)$")
 
 
 class OpportunityMatchOut(BaseModel):
@@ -785,11 +809,20 @@ class OpportunityOut(BaseModel):
     source: str
     title: str
     description: str
+    summary: str | None = None
+    organization: str | None = None
     location: str | None = None
+    venue: str | None = None
     trade_tags: list[str] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    event_date: str | None = None
     deadline: str | None = None
     contact: str | None = None
+    action_url: str | None = None
+    source_excerpt: str | None = None
     status: str
+    outcome_note: str | None = None
+    closed_at: datetime | None = None
     match_count: int = 0
     matches: list[OpportunityMatchOut] = Field(default_factory=list)
     my_match: OpportunityMatchOut | None = None
@@ -812,6 +845,11 @@ class OpportunityMatchStatusUpdateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=240)
 
 
+class OpportunityStatusUpdateRequest(BaseModel):
+    status: str = Field(pattern="^(open|in_progress|filled|closed)$")
+    note: str | None = Field(default=None, max_length=240)
+
+
 class FinancialHealthCategoryOut(BaseModel):
     category_key: str
     title: str
@@ -820,11 +858,36 @@ class FinancialHealthCategoryOut(BaseModel):
     summary: str
 
 
+class FinancialHealthHistoryPointOut(BaseModel):
+    label: str
+    overall_score: float
+    overall_grade: str
+    created_at: datetime
+
+
 class FinancialHealthMetricOut(BaseModel):
     key: str
     label: str
     value: str
     trend: str
+
+
+class FinancialHealthEvidenceOut(BaseModel):
+    evidence_type: str
+    title: str
+    detail: str
+    linked_record_label: str | None = None
+    verification_state: str | None = None
+    created_at: datetime
+
+
+class FinancialHealthPartnerProfileOut(BaseModel):
+    headline: str
+    confidence_label: str
+    summary: str
+    strengths: list[str] = Field(default_factory=list)
+    watchouts: list[str] = Field(default_factory=list)
+    recommended_next_step: str
 
 
 class FinancialHealthSnapshotOut(BaseModel):
@@ -837,6 +900,23 @@ class FinancialHealthSnapshotOut(BaseModel):
     watchouts: list[str] = Field(default_factory=list)
     categories: list[FinancialHealthCategoryOut] = Field(default_factory=list)
     key_metrics: list[FinancialHealthMetricOut] = Field(default_factory=list)
+    evidence_trail: list[FinancialHealthEvidenceOut] = Field(default_factory=list)
+    history: list[FinancialHealthHistoryPointOut] = Field(default_factory=list)
+    partner_profile: FinancialHealthPartnerProfileOut | None = None
+    created_at: datetime
+
+
+class NotificationOut(BaseModel):
+    id: int
+    workspace_id: int
+    user_id: int
+    title: str
+    body: str
+    notification_type: str
+    action_url: str | None = None
+    read_at: datetime | None = None
+    delivered_at: datetime | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -1005,6 +1085,14 @@ class TaskOut(BaseModel):
     linked_id: int | None = None
     created_by_user_id: int | None = None
     created_at: datetime
+
+
+class CommunityArtifactTaskCreateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=180)
+    assigned_to_member_id: int | None = None
+    due_date: str | None = None
+    priority: str | None = None
+    note: str | None = Field(default=None, max_length=240)
 
 
 class MeetingCreate(BaseModel):

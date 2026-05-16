@@ -26,6 +26,11 @@ Quorum brings together the core workflows community operators usually scatter ac
 - budgets, budget lines, expenditures, and export
 - announcements with targeting and scheduling
 - short links and public portal surfaces
+- community inbox highlights from synced WhatsApp and Telegram groups
+- AI extraction for opportunities, tasks, receipts, announcements, and disbursement signals
+- member opportunity matching and recommendation workflows
+- financial health scoring with evidence trail and trend history
+- in-app notifications for assignments, recommendations, and high-value community signals
 
 ## Product Modules
 
@@ -54,6 +59,9 @@ Quorum brings together the core workflows community operators usually scatter ac
 - funding streams
 - budget planner
 - expenditure tracking
+- Squad webhook confirmation for dues and contributions
+- community receipt capture and receipt-to-record matching
+- Squad receipt reference cross-verification inside community inbox flows
 
 ### Engagement
 - event creation
@@ -70,6 +78,94 @@ Quorum brings together the core workflows community operators usually scatter ac
 - Google Meet/Drive integration scaffolding
 - Fireflies transcript ingestion path
 - Anthropic minutes generation
+- WhatsApp group syncing through a local gateway
+- Telegram group syncing
+- community inbox review queue
+- AI opportunity extraction and matching
+- task extraction and assignment from community chats
+- financial health aggregation from platform and community evidence
+
+## Community Intelligence
+
+Quorum now includes a structured community intelligence layer on top of synced chat channels.
+
+Core capabilities:
+
+- workspace-scoped WhatsApp and Telegram channel connections
+- selected-group sync instead of syncing every group by default
+- cached `Community Inbox` highlights feed for actionable signals
+- review queue for uncertain AI extractions
+- bulk approve and reject actions
+- audit trail for approvals and task creation
+- task extraction, assignee suggestion, and task creation from community messages
+- opportunity extraction with:
+  - structured summary
+  - organization and venue hints
+  - deadline and event-date hints
+  - trade tags and key points
+- receipt and contribution-signal extraction with:
+  - OCR/text-aware attachment handling
+  - dues/campaign/contribution linking
+  - Squad transaction-reference cross-verification when a reference is available
+
+Current receipt verification states shown in the inbox:
+
+- `Matched`
+- `Needs review`
+- `Unlinked`
+
+Current task workflow:
+
+- high-confidence task signals can create real workspace tasks
+- Quorum suggests an assignee from workspace members using:
+  - mentioned role
+  - mentioned name
+  - member role metadata
+- assigned members can receive in-app notifications and email notifications when mail is configured
+
+## Opportunity Workflow
+
+Quorum now separates admin and member opportunity experiences.
+
+Admins can:
+
+- review extracted opportunities
+- refresh matches
+- move recommended members through:
+  - `Recommended`
+  - `Interested`
+  - `Contacted`
+  - `Assigned`
+- move opportunity records through:
+  - `Open`
+  - `In progress`
+  - `Filled`
+  - `Closed`
+
+Members can:
+
+- see a `Recommended for you` section
+- browse the wider opportunity board
+- respond with interest without seeing the full admin workflow framing
+
+## Financial Health
+
+Financial health is no longer just a static score output.
+
+It now combines:
+
+- confirmed dues payments
+- confirmed campaign contributions
+- governance and reporting activity
+- community receipt signals
+- verified inflow evidence from community channels
+
+The financial health view now includes:
+
+- category scores
+- trend history
+- evidence trail
+- partner-facing summary/profile
 
 ## Live Demo Flow
 
@@ -121,6 +217,9 @@ Important routes:
 - `/{workspaceSlug}/meetings`
 - `/{workspaceSlug}/campaigns`
 - `/{workspaceSlug}/dues`
+- `/{workspaceSlug}/community-inbox`
+- `/{workspaceSlug}/opportunities`
+- `/{workspaceSlug}/financial-health`
 - `/{workspaceSlug}/budgets`
 - `/{workspaceSlug}/tasks`
 - `/{workspaceSlug}/announcements`
@@ -153,17 +252,24 @@ Main router groups:
 - `dues`
 - `events`
 - `campaigns`
+- `community_channels`
 - `links`
 - `announcements`
 - `tasks`
 - `meetings`
 - `budgets`
+- `financial_health`
+- `notifications`
 - `public`
 - `webhooks`
 
 The OpenAPI docs are available locally at:
 
 - `http://localhost:8000/docs`
+
+Health endpoint:
+
+- `http://localhost:8000/api/v1/health`
 
 And in the deployed environment at:
 
@@ -195,9 +301,12 @@ Logical segmentation:
   - `campaigns`
   - `funding_streams`
   - `contributions`
+  - `virtual_accounts`
   - `budgets`
   - `budget_lines`
   - `expenditures`
+  - `community_financial_records`
+  - `financial_health_snapshots`
 - `engagement`
   - `events`
   - `event_attendees`
@@ -209,6 +318,10 @@ Logical segmentation:
   - `link_clicks`
   - `tasks`
   - `notifications`
+  - `channel_group_links`
+  - `channel_messages`
+  - `message_artifacts`
+  - `opportunities`
 - `platform`
   - `counters`
 
@@ -241,6 +354,14 @@ npm start
 
 Quorum uses the local Baileys gateway only for WhatsApp session handling. Prepare the WhatsApp channel from `Settings > Integrations`, copy the generated channel ID and gateway secret into `whatsapp-gateway/.env`, then connect the session through the gateway's `/internal/session/connect` endpoint. Full setup notes live in [whatsapp-gateway/README.md](/Users/sam/Documents/quorum-commons/whatsapp-gateway/README.md).
 
+Current WhatsApp behavior:
+
+- live new-message sync
+- selected-group syncing only
+- session reset/reconnect support
+- degraded or reconnect-required state when the gateway session is unhealthy
+- group discovery on demand
+
 ## Environment Variables
 
 Backend examples are in `.env.example`.
@@ -255,9 +376,52 @@ GOOGLE_CLIENT_SECRET=
 SQUAD_SECRET_KEY=
 TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
+WHATSAPP_GATEWAY_TOKEN=
+WHATSAPP_GATEWAY_INTERNAL_URL=
 ```
 
 Frontend examples are in `frontend/.env.example`.
+
+## Manual QA
+
+A current end-to-end manual checklist for admin/member flows lives at:
+
+- [docs/member-workflow-test-pass.md](/Users/sam/Documents/quorum-commons/docs/member-workflow-test-pass.md)
+
+## Recommended Deployment Shape
+
+The current repo is easiest to deploy with:
+
+- `frontend` on Vercel
+- `backend` on Azure Web App for Containers or Azure App Service
+- `whatsapp-gateway` on a separate Azure Web App for Containers
+- `MongoDB` on MongoDB Atlas
+
+Why split the gateway:
+
+- the WhatsApp gateway has its own runtime behavior and local auth/session storage
+- it should not be bundled into the main FastAPI backend process
+- isolating it makes reconnects and restarts safer
+
+Recommended production topology:
+
+1. Vercel hosts the Next.js frontend.
+2. Azure Web App hosts the FastAPI backend.
+3. Another Azure Web App hosts the WhatsApp gateway.
+4. MongoDB Atlas stores the application data.
+5. Public HTTPS routes are configured so:
+   - frontend calls the backend API
+   - backend calls the internal WhatsApp gateway URL
+   - Squad webhooks hit the backend
+   - WhatsApp gateway pushes inbound events back to the backend
+
+Deployment notes:
+
+- Persist WhatsApp auth/session storage on the gateway app if possible.
+- Set `WHATSAPP_GATEWAY_INTERNAL_URL` on the backend to the gateway base URL.
+- Set `PUBLIC_APP_URL` / `NEXT_PUBLIC_API_BASE_URL` correctly for frontend and backend coordination.
+- Configure Squad webhook URL to `/api/v1/webhooks/squad`.
+- Use the backend health route `/api/v1/health` for uptime checks.
 
 The key one is:
 

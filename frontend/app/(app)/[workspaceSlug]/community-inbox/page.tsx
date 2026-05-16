@@ -56,12 +56,39 @@ type CommunityHighlight = {
   reviewed_at?: string | null;
   reviewed_by_user_id?: number | null;
   review_note?: string | null;
+  linked_record_type?: string | null;
+  linked_record_label?: string | null;
+  verification_state?: string | null;
+  provider_verification_status?: string | null;
+  provider_verification_note?: string | null;
+  provider_verified_amount?: number | null;
+  linked_task_id?: number | null;
+  linked_task_title?: string | null;
+  suggested_assignee_member_id?: number | null;
+  suggested_assignee_name?: string | null;
+  created_at: string;
+};
+type CommunityInboxAuditItem = {
+  item_type: string;
+  title: string;
+  detail: string;
+  actor_name?: string | null;
   created_at: string;
 };
 type CommunityInboxFeed = {
   highlights: CommunityHighlight[];
   review_queue: CommunityHighlight[];
+  audit_trail: CommunityInboxAuditItem[];
   refreshed_at: string;
+};
+
+type ArtifactWithOptionalLink = {
+  artifact_type: string;
+  linked_record_label?: string | null;
+  verification_state?: string | null;
+  provider_verification_status?: string | null;
+  provider_verification_note?: string | null;
+  provider_verified_amount?: number | null;
 };
 
 const HIGHLIGHTS_CACHE_PREFIX = "community-inbox-highlights:";
@@ -96,15 +123,19 @@ function writeCachedFeed(workspaceSlug: string, feed: CommunityInboxFeed) {
 export default function CommunityInboxPage({ params }: { params: { workspaceSlug: string } }) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [messages, setMessages] = useState<ChannelMessage[] | null>(null);
+  const [allArtifacts, setAllArtifacts] = useState<MessageArtifact[] | null>(null);
   const [highlights, setHighlights] = useState<CommunityHighlight[]>([]);
   const [reviewQueue, setReviewQueue] = useState<CommunityHighlight[]>([]);
+  const [auditTrail, setAuditTrail] = useState<CommunityInboxAuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analyzingId, setAnalyzingId] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [reviewingArtifactId, setReviewingArtifactId] = useState<number | null>(null);
+  const [creatingTaskArtifactId, setCreatingTaskArtifactId] = useState<number | null>(null);
+  const [bulkReviewing, setBulkReviewing] = useState<"approve" | "reject" | null>(null);
   const [loadingAllMessages, setLoadingAllMessages] = useState(false);
-  const [viewFilter, setViewFilter] = useState<"highlights" | "all" | "whatsapp" | "telegram" | "needs_review">("highlights");
+  const [viewFilter, setViewFilter] = useState<"highlights" | "all" | "whatsapp" | "telegram" | "needs_review" | "opportunities" | "tasks" | "receipts">("highlights");
 
   async function loadFeed(workspaceId: number, options?: { background?: boolean }) {
     if (!options?.background) {
@@ -116,6 +147,7 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
       const feed = await apiGet<CommunityInboxFeed>(`/workspaces/${workspaceId}/community-channels/feed`);
       setHighlights(feed.highlights);
       setReviewQueue(feed.review_queue);
+      setAuditTrail(feed.audit_trail || []);
       writeCachedFeed(params.workspaceSlug, feed);
       setError(null);
     } catch (err) {
@@ -141,12 +173,23 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     }
   }
 
+  async function loadAllArtifacts(workspaceId: number) {
+    try {
+      const loadedArtifacts = await apiGet<MessageArtifact[]>(`/workspaces/${workspaceId}/community-channels/artifacts`);
+      setAllArtifacts(loadedArtifacts);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load analyzed message window.");
+    }
+  }
+
   useEffect(() => {
     async function load() {
       const cachedFeed = readCachedFeed(params.workspaceSlug);
       if (cachedFeed) {
         setHighlights(cachedFeed.highlights);
         setReviewQueue(cachedFeed.review_queue);
+        setAuditTrail(cachedFeed.audit_trail || []);
         setLoading(false);
       }
       try {
@@ -166,17 +209,27 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
       return;
     }
     const timer = window.setInterval(() => {
+      if (viewFilter === "all") {
+        Promise.all([
+          loadAllMessages(workspace.id, { background: true }),
+          loadAllArtifacts(workspace.id),
+        ]).catch(() => {});
+        return;
+      }
       loadFeed(workspace.id, { background: true }).catch(() => {});
     }, 12000);
     return () => window.clearInterval(timer);
-  }, [workspace]);
+  }, [viewFilter, workspace]);
 
   useEffect(() => {
-    if (!workspace || viewFilter !== "all" || messages) {
+    if (!workspace || viewFilter !== "all" || (messages && allArtifacts)) {
       return;
     }
-    loadAllMessages(workspace.id).catch(() => {});
-  }, [messages, viewFilter, workspace]);
+    Promise.all([
+      loadAllMessages(workspace.id),
+      loadAllArtifacts(workspace.id),
+    ]).catch(() => {});
+  }, [allArtifacts, messages, viewFilter, workspace]);
 
   async function analyzeMessage(messageId: number) {
     if (!workspace) {
@@ -198,6 +251,7 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
       );
       await loadFeed(workspace.id, { background: true });
       if (viewFilter === "all") {
+        await loadAllArtifacts(workspace.id);
         setMessages((current) =>
           current?.map((message) =>
             message.id === messageId ? { ...message, artifact_count: Math.max(message.artifact_count, 1) } : message,
@@ -230,7 +284,51 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     }
   }
 
-  const artifactByMessage = new Map(highlights.map((highlight) => [highlight.message_id, highlight]));
+  async function createTaskFromArtifact(artifactId: number) {
+    if (!workspace) {
+      return;
+    }
+    setCreatingTaskArtifactId(artifactId);
+    setError(null);
+    try {
+      await apiPost(
+        `/workspaces/${workspace.id}/community-channels/artifacts/${artifactId}/create-task`,
+        {},
+      );
+      await loadFeed(workspace.id, { background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create task from this artifact.");
+    } finally {
+      setCreatingTaskArtifactId(null);
+    }
+  }
+
+  async function bulkReview(action: "approve" | "reject") {
+    if (!workspace || reviewQueue.length === 0) {
+      return;
+    }
+    setBulkReviewing(action);
+    setError(null);
+    try {
+      await apiPost(
+        `/workspaces/${workspace.id}/community-channels/artifacts/review-bulk`,
+        { artifact_ids: reviewQueue.map((item) => item.artifact_id), action },
+      );
+      await loadFeed(workspace.id, { background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to ${action} the review queue.`);
+    } finally {
+      setBulkReviewing(null);
+    }
+  }
+
+  const artifactByMessage = new Map<number, MessageArtifact | CommunityHighlight>()
+  for (const artifact of allArtifacts || []) {
+    artifactByMessage.set(artifact.message_id, artifact)
+  }
+  for (const highlight of highlights) {
+    artifactByMessage.set(highlight.message_id, highlight)
+  }
   const filteredHighlights = useMemo(() => {
     if (viewFilter === "highlights") {
       return highlights;
@@ -240,6 +338,15 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     }
     if (viewFilter === "whatsapp" || viewFilter === "telegram") {
       return highlights.filter((highlight) => highlight.provider === viewFilter);
+    }
+    if (viewFilter === "opportunities") {
+      return highlights.filter((highlight) => highlight.artifact_type === "opportunity");
+    }
+    if (viewFilter === "tasks") {
+      return highlights.filter((highlight) => highlight.artifact_type === "task_signal");
+    }
+    if (viewFilter === "receipts") {
+      return highlights.filter((highlight) => ["payment_receipt", "contribution_signal"].includes(highlight.artifact_type));
     }
     return highlights;
   }, [highlights, reviewQueue, viewFilter]);
@@ -285,6 +392,56 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
     if (status === "analysis_failed" || status === "rejected") return "danger";
     return "neutral";
   }
+
+  function renderFinancialLinkLine(item: ArtifactWithOptionalLink) {
+    if (!["payment_receipt", "contribution_signal"].includes(item.artifact_type)) {
+      return null;
+    }
+    if (item.provider_verification_status === "verified") {
+      return <small className="muted-copy">{item.provider_verification_note || "Matched against Squad transaction data"}</small>;
+    }
+    if (item.provider_verification_status === "amount_mismatch") {
+      return <small className="muted-copy">{item.provider_verification_note || "Squad found this reference, but the amount does not match."}</small>;
+    }
+    if (item.provider_verification_status === "reference_not_confirmed" || item.provider_verification_status === "reference_not_found") {
+      return <small className="muted-copy">{item.provider_verification_note || "Squad could not confirm this transaction reference yet."}</small>;
+    }
+    if (item.linked_record_label) {
+      return <small className="muted-copy">Matched to {item.linked_record_label}</small>;
+    }
+    if (item.verification_state === "needs_review") {
+      return <small className="muted-copy">Possible match found, review before trusting it</small>;
+    }
+    if (item.verification_state === "unlinked") {
+      return <small className="muted-copy">Receipt captured, not linked yet</small>;
+    }
+    return null;
+  }
+
+  function canCreateTask(item: CommunityHighlight) {
+    return item.artifact_type === "task_signal" && !item.linked_task_id;
+  }
+
+  function artifactIdentifier(item: MessageArtifact | CommunityHighlight) {
+    return "artifact_id" in item ? item.artifact_id : item.id;
+  }
+
+  const clusteredHighlights = useMemo(() => {
+    if (viewFilter === "all") {
+      return [];
+    }
+    const buckets = new Map<string, { label: string; items: CommunityHighlight[] }>();
+    for (const item of filteredHighlights) {
+      const day = new Date(item.received_at).toLocaleDateString("en-NG", { day: "numeric", month: "short" });
+      const label = `${item.group_name || item.external_group_id} · ${day}`;
+      const key = `${item.external_group_id}:${day}`;
+      if (!buckets.has(key)) {
+        buckets.set(key, { label, items: [] });
+      }
+      buckets.get(key)?.items.push(item);
+    }
+    return Array.from(buckets.values());
+  }, [filteredHighlights, viewFilter]);
 
   return (
     <section className="page-stack">
@@ -373,6 +530,15 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
             <button type="button" className={`filter-chip ${viewFilter === "telegram" ? "active" : ""}`} onClick={() => setViewFilter("telegram")}>
               Telegram
             </button>
+            <button type="button" className={`filter-chip ${viewFilter === "opportunities" ? "active" : ""}`} onClick={() => setViewFilter("opportunities")}>
+              Opportunities
+            </button>
+            <button type="button" className={`filter-chip ${viewFilter === "tasks" ? "active" : ""}`} onClick={() => setViewFilter("tasks")}>
+              Tasks
+            </button>
+            <button type="button" className={`filter-chip ${viewFilter === "receipts" ? "active" : ""}`} onClick={() => setViewFilter("receipts")}>
+              Receipts
+            </button>
             <button type="button" className={`filter-chip ${viewFilter === "needs_review" ? "active" : ""}`} onClick={() => setViewFilter("needs_review")}>
               Needs review
             </button>
@@ -411,11 +577,14 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
 
                         <div className="community-log-footer">
                           {artifact ? (
-                            <div className="artifact-inline">
-                              <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
-                              {artifact.status !== "ready" && artifact.status !== "approved" ? (
-                                <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
-                              ) : null}
+                            <div>
+                              <div className="artifact-inline">
+                                <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
+                                {artifact.status !== "ready" && artifact.status !== "approved" ? (
+                                  <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
+                                ) : null}
+                              </div>
+                              {renderFinancialLinkLine(artifact)}
                             </div>
                           ) : (
                             <span className="muted-copy">Awaiting analysis</span>
@@ -435,33 +604,58 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
                       </article>
                     );
                   })
-                : filteredHighlights.map((message) => {
-                    const artifact = message;
-                    return (
-                      <article key={message.artifact_id} className="community-log-item">
-                        <div className="community-log-meta">
-                          <div className="community-log-source">
-                            <span className={`source-pill ${message.provider}`}>{message.provider}</span>
-                          </div>
-                          <small>{formatTime(message.received_at)}</small>
-                        </div>
+                : clusteredHighlights.map((cluster) => (
+                    <section key={cluster.label} className="community-cluster">
+                      <div className="community-cluster-head">
+                        <h3>{cluster.label}</h3>
+                        <small>{cluster.items.length} items</small>
+                      </div>
+                      {cluster.items.map((message) => {
+                        const artifact = message;
+                        return (
+                          <article key={message.artifact_id} className="community-log-item">
+                            <div className="community-log-meta">
+                              <div className="community-log-source">
+                                <span className={`source-pill ${message.provider}`}>{message.provider}</span>
+                              </div>
+                              <small>{formatTime(message.received_at)}</small>
+                            </div>
 
-                        <div className="community-log-body">
-                          <div className="community-log-sender">{message.sender_name || message.sender_handle || "Unknown sender"}</div>
-                          <p>{message.text}</p>
-                        </div>
+                            <div className="community-log-body">
+                              <div className="community-log-sender">{message.sender_name || message.sender_handle || "Unknown sender"}</div>
+                              <p>{message.text}</p>
+                            </div>
 
-                        <div className="community-log-footer">
-                          <div className="artifact-inline">
-                            <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
-                            {artifact.status !== "ready" && artifact.status !== "approved" ? (
-                              <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </article>
-                    );
-                  })}
+                            <div className="community-log-footer">
+                              <div>
+                                <div className="artifact-inline">
+                                  <span className="tag-pill">{humanizeArtifactType(artifact.artifact_type)}</span>
+                                  {artifact.status !== "ready" && artifact.status !== "approved" ? (
+                                    <span className={`status-pill ${artifactTone(artifact.status)}`}>{artifact.status.replaceAll("_", " ")}</span>
+                                  ) : null}
+                                </div>
+                                {renderFinancialLinkLine(artifact)}
+                                {artifact.linked_task_title ? <small className="muted-copy">Task created: {artifact.linked_task_title}</small> : null}
+                                {artifact.suggested_assignee_name && !artifact.linked_task_id ? (
+                                  <small className="muted-copy">Suggested assignee: {artifact.suggested_assignee_name}</small>
+                                ) : null}
+                              </div>
+                              {artifact.artifact_type === "task_signal" && !artifact.linked_task_id ? (
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  disabled={creatingTaskArtifactId === artifactIdentifier(artifact)}
+                                  onClick={() => createTaskFromArtifact(artifactIdentifier(artifact))}
+                                >
+                                  {creatingTaskArtifactId === artifactIdentifier(artifact) ? "Creating..." : "Create task"}
+                                </button>
+                              ) : null}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </section>
+                  ))}
             </div>
           )}
         </article>
@@ -474,6 +668,16 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
             </div>
             <span className="status-pill">{reviewQueue.length} pending</span>
           </div>
+          {reviewQueue.length ? (
+            <div className="card-actions">
+              <button type="button" className="btn-primary" disabled={bulkReviewing !== null} onClick={() => bulkReview("approve")}>
+                {bulkReviewing === "approve" ? "Approving..." : "Approve all shown"}
+              </button>
+              <button type="button" className="btn-secondary" disabled={bulkReviewing !== null} onClick={() => bulkReview("reject")}>
+                {bulkReviewing === "reject" ? "Rejecting..." : "Reject all shown"}
+              </button>
+            </div>
+          ) : null}
           {reviewQueue.length === 0 ? (
             <p className="muted-copy">No pending review items right now.</p>
           ) : (
@@ -489,6 +693,9 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
                     <small className="muted-copy">
                       {artifact.status === "analysis_failed" ? "AI analysis failed" : "Confidence below auto-approve threshold"}
                     </small>
+                    {renderFinancialLinkLine(artifact)}
+                    {artifact.linked_task_title ? <small className="muted-copy">Task created: {artifact.linked_task_title}</small> : null}
+                    {artifact.suggested_assignee_name && !artifact.linked_task_id ? <small className="muted-copy">Suggested assignee: {artifact.suggested_assignee_name}</small> : null}
                     <div className="review-queue-actions">
                       <button
                         type="button"
@@ -506,12 +713,44 @@ export default function CommunityInboxPage({ params }: { params: { workspaceSlug
                       >
                         Reject
                       </button>
+                      {canCreateTask(artifact) ? (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={creatingTaskArtifactId === artifact.artifact_id}
+                          onClick={() => createTaskFromArtifact(artifact.artifact_id)}
+                        >
+                          {creatingTaskArtifactId === artifact.artifact_id ? "Creating..." : "Create task"}
+                        </button>
+                      ) : null}
                     </div>
                   </article>
                 );
               })}
             </div>
           )}
+
+          <div className="community-audit-block">
+            <div className="card-head compact">
+              <h2>Audit trail</h2>
+            </div>
+            {auditTrail.length === 0 ? (
+              <p className="muted-copy">Reviews and task conversions will appear here.</p>
+            ) : (
+              <div className="activity-list">
+                {auditTrail.map((item) => (
+                  <div key={`${item.item_type}-${item.created_at}-${item.title}`} className="activity-item">
+                    <div>
+                      <h3>{item.title}</h3>
+                      <p>{item.detail}</p>
+                      {item.actor_name ? <p className="muted-copy">By {item.actor_name}</p> : null}
+                    </div>
+                    <span>{formatTime(item.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </aside>
       </section>
     </section>

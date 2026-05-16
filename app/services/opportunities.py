@@ -5,6 +5,7 @@ from typing import Any
 
 from ..database import DESC, MongoStore
 from ..rbac import role_display_name
+from .notifications import create_notification
 
 
 def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str, Any]]:
@@ -15,6 +16,7 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
 
     members = db.find_many("workspace_members", {"workspace_id": workspace_id, "status": "active"})
     created: list[dict[str, Any]] = []
+    workspace = db.find_by_id("workspaces", workspace_id)
     seen_member_ids: set[int] = set()
     for member in members:
         candidate = _score_member_for_opportunity(member=member, opportunity=opportunity, db=db)
@@ -36,8 +38,7 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
         if not candidate:
             continue
         seen_member_ids.add(int(member.id))
-        created.append(
-            db.insert(
+        saved = db.insert(
                 "opportunity_matches",
                 {
                     "workspace_id": workspace_id,
@@ -48,15 +49,31 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
                     **candidate,
                 },
             )
-        )
+        created.append(saved)
+        if (
+            saved.get("status") == "recommended"
+            and float(saved.get("match_score") or 0) >= 0.58
+            and workspace
+            and (not existing or str(existing.get("status") or "").strip().lower() == "recommended")
+        ):
+            create_notification(
+                db,
+                workspace_id=workspace_id,
+                user_id=member.user_id,
+                title="Recommended opportunity for you",
+                body=f"{opportunity.get('title') or 'A community opportunity'} looks relevant to your profile.",
+                notification_type="opportunity_recommendation",
+                action_url=f"/{workspace.slug}/opportunities",
+                metadata={"opportunity_id": opportunity.id, "member_id": member.id},
+                dedupe_key=f"opportunity:{opportunity.id}:member:{member.id}",
+            )
 
     for member_id, existing in existing_by_member.items():
         if member_id in seen_member_ids:
             continue
         if str(existing.get("status") or "").strip().lower() not in {"interested", "contacted", "assigned"}:
             continue
-        created.append(
-            db.insert(
+        saved = db.insert(
                 "opportunity_matches",
                 {
                     "workspace_id": workspace_id,
@@ -75,7 +92,7 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
                     "note": existing.get("note"),
                 },
             )
-        )
+        created.append(saved)
 
     return sorted(created, key=lambda item: float(item.get("match_score") or 0), reverse=True)
 

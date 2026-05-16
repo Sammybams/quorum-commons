@@ -125,7 +125,6 @@ export default function LoginPage() {
           <Link className="wordmark" href="/">
             <BrandWordmark />
           </Link>
-          <ThemeToggle compact />
         </div>
         <div className="auth-product-preview" aria-hidden="true">
           <div className="auth-preview-topline">
