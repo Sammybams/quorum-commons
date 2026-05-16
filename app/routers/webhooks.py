@@ -16,6 +16,15 @@ def _process_confirmed_reference(
     provider: str,
     provider_transaction_ref: str | None = None,
 ):
+    db.update_one(
+        "virtual_accounts",
+        {"reference": reference},
+        {
+            "status": "funded",
+            "updated_at": datetime.utcnow(),
+        },
+    )
+
     payment = db.find_one("dues_payments", {"gateway_ref": reference})
     if payment:
         payment["status"] = "paid"

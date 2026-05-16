@@ -6,10 +6,27 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
-from ..payments import PaymentInitializationError, initialize_collection_transaction, payment_callback_url, squad_configured
+from ..payments import (
+    ensure_squad_dynamic_virtual_account_pool,
+    PaymentInitializationError,
+    initialize_collection_transaction,
+    payment_callback_url,
+    squad_configured,
+    squad_missing_virtual_account_pool,
+)
 from .campaigns import _contribution_out, _stream_out
 
 router = APIRouter(prefix="/public", tags=["public"])
+
+
+def _ensure_squad_pool_ready(*, db: MongoStore, integration, workspace_id: int) -> None:
+    beneficiary_account = str((integration or {}).get("beneficiary_account") or "").strip()
+    ensure_squad_dynamic_virtual_account_pool(beneficiary_account=beneficiary_account or None)
+    db.update_one(
+        "integrations",
+        {"workspace_id": workspace_id, "provider": "squad"},
+        {"pool_status": "ready", "updated_at": datetime.utcnow()},
+    )
 
 
 def _referer_platform(referer: str | None) -> str:
@@ -187,7 +204,27 @@ def submit_public_contribution(
             duration_seconds=duration_seconds,
         )
     except PaymentInitializationError as exc:
-        raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {exc}") from exc
+        try:
+            if squad_missing_virtual_account_pool(exc):
+                _ensure_squad_pool_ready(db=db, integration=squad_integration, workspace_id=campaign.workspace_id)
+                checkout = initialize_collection_transaction(
+                    email=payload.contributor_email,
+                    amount=payload.amount,
+                    reference=reference,
+                    callback_url=payment_callback_url(f"/donate/{campaign.slug}"),
+                    metadata={
+                        "type": "campaign_contribution",
+                        "campaign_id": campaign.id,
+                        "campaign_slug": campaign.slug,
+                        "workspace_id": campaign.workspace_id,
+                        "stream_id": payload.stream_id,
+                    },
+                    duration_seconds=duration_seconds,
+                )
+            else:
+                raise exc
+        except PaymentInitializationError as retry_exc:
+            raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {retry_exc}") from retry_exc
 
     contribution = db.insert(
         "contributions",

@@ -47,6 +47,17 @@ type TelegramSetupStatus = {
   message: string;
   instructions_url?: string | null;
 };
+type SquadSetup = {
+  webhook_url: string;
+  signature_header: string;
+  configured_on_server: boolean;
+  connected_for_workspace: boolean;
+  sandbox_mode: boolean;
+  simulation_supported: boolean;
+  public_webhook_reachable: boolean;
+  local_processing_enabled: boolean;
+  note: string;
+};
 
 function formatChannelStatus(status: string) {
   return status.replaceAll("_", " ");
@@ -64,6 +75,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [loading, setLoading] = useState(true);
   const [connectingGoogle, setConnectingGoogle] = useState(false);
   const [savingSquad, setSavingSquad] = useState(false);
+  const [simulatingSquad, setSimulatingSquad] = useState(false);
   const [savingTelegram, setSavingTelegram] = useState(false);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
   const [telegramActionChannelId, setTelegramActionChannelId] = useState<number | null>(null);
@@ -72,6 +84,9 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [merchantName, setMerchantName] = useState("");
   const [beneficiaryAccount, setBeneficiaryAccount] = useState("");
   const [durationSeconds, setDurationSeconds] = useState("3600");
+  const [squadSetup, setSquadSetup] = useState<SquadSetup | null>(null);
+  const [squadMessage, setSquadMessage] = useState<string | null>(null);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [telegramLabel, setTelegramLabel] = useState("Community Telegram");
   const [telegramPhoneNumber, setTelegramPhoneNumber] = useState("");
   const [telegramCodes, setTelegramCodes] = useState<Record<number, string>>({});
@@ -84,10 +99,11 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
       try {
         const found = await resolveWorkspace(params.workspaceSlug);
         setWorkspace(found);
-        const [integrations, loadedChannels, telegramSetupStatus] = await Promise.all([
+        const [integrations, loadedChannels, telegramSetupStatus, squadSetupStatus] = await Promise.all([
           apiGet<Integration[]>(`/workspaces/${found.id}/integrations`),
           apiGet<CommunityChannel[]>(`/workspaces/${found.id}/community-channels`),
           apiGet<TelegramSetupStatus>(`/workspaces/${found.id}/community-channels/telegram/setup-status`),
+          apiGet<SquadSetup>(`/workspaces/${found.id}/integrations/squad/setup`),
         ]);
         const google = integrations.find((item) => item.provider === "google_workspace") || null;
         const squad = integrations.find((item) => item.provider === "squad") || null;
@@ -96,6 +112,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         setFireflies(integrations.find((item) => item.provider === "fireflies") || null);
         setChannels(loadedChannels);
         setTelegramSetup(telegramSetupStatus);
+        setSquadSetup(squadSetupStatus);
         setMerchantName(squad?.metadata?.merchant_name || "");
         setBeneficiaryAccount(squad?.metadata?.beneficiary_account || "");
         setDurationSeconds(squad?.metadata?.default_duration_seconds || "3600");
@@ -243,6 +260,7 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         },
       );
       setSquadIntegration(saved);
+      setSquadSetup(await apiGet<SquadSetup>(`/workspaces/${workspace.id}/integrations/squad/setup`));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save Squad settings.");
     } finally {
@@ -265,10 +283,46 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         scopes: [],
         metadata: {},
       });
+      setSquadSetup(await apiGet<SquadSetup>(`/workspaces/${workspace.id}/integrations/squad/setup`));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to disconnect Squad.");
     } finally {
       setSavingSquad(false);
+    }
+  }
+
+  async function copySquadWebhook() {
+    if (!squadSetup?.webhook_url) {
+      return;
+    }
+    await navigator.clipboard.writeText(squadSetup.webhook_url);
+    setCopiedWebhook(true);
+    window.setTimeout(() => setCopiedWebhook(false), 1500);
+  }
+
+  async function simulateLatestSquadPayment() {
+    if (!workspace) {
+      return;
+    }
+    setSimulatingSquad(true);
+    setError(null);
+    setSquadMessage(null);
+    try {
+      const result = await apiPost<
+        {
+          ok: boolean;
+          message: string;
+          verification_status: string;
+          locally_processed: boolean;
+          reference: string;
+        },
+        Record<string, never>
+      >(`/workspaces/${workspace.id}/integrations/squad/simulate-payment`, {});
+      setSquadMessage(result.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to simulate Squad payment.");
+    } finally {
+      setSimulatingSquad(false);
     }
   }
 
@@ -837,50 +891,79 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               {loading ? "Loading" : squadIntegration?.status === "connected" ? "Connected" : "Not connected"}
             </span>
           </div>
-          <p>Squad is now the only payment rail in Quorum. Configure it once for the workspace and all dues and campaign collections will use Squad virtual accounts.</p>
+          <p>Use Squad for dues and contribution payments. Once connected, Quorum will generate payment accounts and record confirmed transfers for this workspace automatically.</p>
           <div className="mini-list">
             <div>
-              <span>Mode</span>
-              <strong>{squadIntegration?.metadata?.collection_mode || "dynamic_virtual_account"}</strong>
+              <span>Payment rail</span>
+              <strong>{squadIntegration?.status === "connected" ? "Ready" : "Not connected"}</strong>
             </div>
             <div>
-              <span>Merchant</span>
-              <strong>{squadIntegration?.metadata?.merchant_name || "Not set"}</strong>
+              <span>Webhook</span>
+              <strong>{squadSetup?.public_webhook_reachable ? "Ready" : "Needs public URL"}</strong>
             </div>
             <div>
-              <span>Beneficiary account</span>
-              <strong>{squadIntegration?.metadata?.beneficiary_account || "Not set"}</strong>
+              <span>Testing</span>
+              <strong>{squadSetup?.sandbox_mode ? "Sandbox mode" : "Live mode"}</strong>
             </div>
             <div>
-              <span>Expiry window</span>
+              <span>Collection expiry</span>
               <strong>{squadIntegration?.metadata?.default_duration_seconds || "3600"}s</strong>
             </div>
           </div>
+          {squadSetup ? (
+            <div className="form-stack">
+              <label>
+                Webhook URL for Squad
+                <input value={squadSetup.webhook_url} readOnly />
+              </label>
+              <small className="muted-copy">{squadSetup.note}</small>
+              {squadIntegration?.metadata?.pool_status === "ready" ? (
+                <small className="muted-copy">Payment account generation is ready for new collections.</small>
+              ) : null}
+              {squadSetup.sandbox_mode ? (
+                <small className="muted-copy">
+                  Sandbox mode is active. You can run a test payment from here after generating a dues or contribution payment account.
+                </small>
+              ) : null}
+            </div>
+          ) : null}
           <div className="form-stack">
             <label>
-              Merchant label
-              <input value={merchantName} onChange={(event) => setMerchantName(event.target.value)} placeholder="Quorum Cooperative Collections" />
+              Collection label
+              <input value={merchantName} onChange={(event) => setMerchantName(event.target.value)} placeholder="Community collections" />
             </label>
             <label>
-              Beneficiary account
-              <input value={beneficiaryAccount} onChange={(event) => setBeneficiaryAccount(event.target.value)} placeholder="0123456789" />
+              Settlement account
+              <input value={beneficiaryAccount} onChange={(event) => setBeneficiaryAccount(event.target.value)} placeholder="Optional" />
             </label>
+            <small className="muted-copy">Optional. Only fill this in if your Squad setup specifically asks for it.</small>
             <label>
-              Virtual account expiry (seconds)
+              Collection expiry (seconds)
               <input type="number" min="60" max="86400" value={durationSeconds} onChange={(event) => setDurationSeconds(event.target.value)} />
             </label>
           </div>
           <div className="page-actions">
             <button type="button" className="btn-primary" onClick={saveSquad} disabled={savingSquad || !squadIntegration?.configured}>
-              {savingSquad ? "Saving..." : squadIntegration?.status === "connected" ? "Update Squad" : "Connect Squad"}
+              {savingSquad ? "Saving..." : squadIntegration?.status === "connected" ? "Save payment settings" : "Connect Squad"}
             </button>
+            {squadSetup?.webhook_url ? (
+              <button type="button" className="btn-secondary" onClick={copySquadWebhook}>
+                {copiedWebhook ? "Copied" : "Copy webhook"}
+              </button>
+            ) : null}
+            {squadSetup?.simulation_supported && squadIntegration?.status === "connected" ? (
+              <button type="button" className="btn-secondary" onClick={simulateLatestSquadPayment} disabled={simulatingSquad}>
+                {simulatingSquad ? "Testing..." : "Run test payment"}
+              </button>
+            ) : null}
             {squadIntegration?.status === "connected" ? (
               <button type="button" className="btn-secondary" onClick={disconnectSquad} disabled={savingSquad}>
                 Disconnect
               </button>
             ) : null}
           </div>
-          {!squadIntegration?.configured ? <p className="muted-copy">Set `SQUAD_SECRET_KEY` on the backend before connecting Squad.</p> : null}
+          {squadMessage ? <p className="status-note">{squadMessage}</p> : null}
+          {!squadIntegration?.configured ? <p className="muted-copy">Squad has not been enabled on this server yet.</p> : null}
         </article>
 
         <article className="panel-card integrations-setup-card">

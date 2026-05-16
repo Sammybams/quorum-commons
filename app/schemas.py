@@ -605,6 +605,33 @@ class SquadIntegrationConfigRequest(BaseModel):
     default_duration_seconds: int = Field(default=3600, ge=60, le=86400)
 
 
+class SquadIntegrationSetupOut(BaseModel):
+    webhook_url: str
+    signature_header: str = "x-squad-encrypted-body"
+    configured_on_server: bool
+    connected_for_workspace: bool
+    sandbox_mode: bool
+    simulation_supported: bool
+    public_webhook_reachable: bool
+    local_processing_enabled: bool
+    note: str
+
+
+class SquadSimulationRequest(BaseModel):
+    reference: str | None = Field(default=None, min_length=6, max_length=120)
+
+
+class SquadSimulationOut(BaseModel):
+    ok: bool = True
+    reference: str
+    virtual_account_number: str
+    amount: float
+    provider_status: str
+    verification_status: str
+    locally_processed: bool = False
+    message: str
+
+
 class VirtualAccountOut(BaseModel):
     id: int
     workspace_id: int

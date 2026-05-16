@@ -13,6 +13,10 @@ class PaymentInitializationError(RuntimeError):
     pass
 
 
+class PaymentSimulationError(RuntimeError):
+    pass
+
+
 @dataclass
 class PaymentInitialization:
     provider: str
@@ -45,9 +49,13 @@ def squad_configured() -> bool:
     return bool(os.getenv("SQUAD_SECRET_KEY"))
 
 
-def squad_base_url() -> str:
+def squad_sandbox_mode() -> bool:
     secret = os.getenv("SQUAD_SECRET_KEY", "")
-    if secret.startswith("sandbox_"):
+    return secret.startswith("sandbox_")
+
+
+def squad_base_url() -> str:
+    if squad_sandbox_mode():
         return "https://sandbox-api-d.squadco.com"
     return "https://api-d.squadco.com"
 
@@ -119,6 +127,50 @@ def initialize_squad_dynamic_virtual_account(
     )
 
 
+def create_squad_dynamic_virtual_account_pool(
+    *,
+    beneficiary_account: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> dict | None:
+    secret_key = os.getenv("SQUAD_SECRET_KEY")
+    if not secret_key:
+        return None
+
+    payload: dict[str, object] = {}
+    if beneficiary_account:
+        payload["beneficiary_account"] = str(beneficiary_account)
+    if first_name and last_name:
+        payload["first_name"] = first_name
+        payload["last_name"] = last_name
+
+    data = _json_request(
+        url=f"{squad_base_url()}/virtual-account/create-dynamic-virtual-account",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        },
+        payload=payload,
+    )
+    if not data.get("success"):
+        raise PaymentInitializationError(data.get("message") or "Squad dynamic account pool setup failed")
+    return data.get("data") or {}
+
+
+def squad_disallows_beneficiary_account(detail: str | Exception) -> bool:
+    return "not allowed to pass beneficiary account" in str(detail).strip().lower()
+
+
+def ensure_squad_dynamic_virtual_account_pool(*, beneficiary_account: str | None = None) -> dict | None:
+    try:
+        return create_squad_dynamic_virtual_account_pool(beneficiary_account=beneficiary_account)
+    except PaymentInitializationError as exc:
+        if beneficiary_account and squad_disallows_beneficiary_account(exc):
+            return create_squad_dynamic_virtual_account_pool()
+        raise
+
+
 def initialize_collection_transaction(
     *,
     email: str,
@@ -159,12 +211,42 @@ def verify_squad_transaction(reference: str) -> PaymentVerification | None:
     )
 
 
+def squad_missing_virtual_account_pool(detail: str | Exception) -> bool:
+    return "unable to retrieve a virtual account" in str(detail).strip().lower()
+
+
 def verify_squad_signature(raw_body: bytes, signature: str | None) -> bool:
     secret_key = os.getenv("SQUAD_SECRET_KEY")
     if not secret_key or not signature:
         return False
     expected = hmac.new(secret_key.encode("utf-8"), raw_body, hashlib.sha512).hexdigest().upper()
     return hmac.compare_digest(expected, signature.upper())
+
+
+def simulate_squad_virtual_account_payment(*, virtual_account_number: str, amount: float) -> dict | None:
+    secret_key = os.getenv("SQUAD_SECRET_KEY")
+    if not secret_key:
+        return None
+    if not squad_sandbox_mode():
+        raise PaymentSimulationError("Squad payment simulation is only available with sandbox credentials.")
+
+    payload = {
+        "virtual_account_number": str(virtual_account_number),
+        "amount": str(int(round(amount))),
+        "dva": True,
+    }
+    data = _json_request(
+        url=f"{squad_base_url()}/virtual-account/simulate/payment",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        },
+        payload=payload,
+    )
+    if not data.get("success"):
+        raise PaymentSimulationError(data.get("message") or "Squad sandbox payment simulation failed")
+    return data
 
 
 def payment_callback_url(path: str | None = None) -> str | None:

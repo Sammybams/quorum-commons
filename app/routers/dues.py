@@ -5,10 +5,27 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import models, schemas
 from ..database import DESC, MongoStore, get_db
-from ..payments import PaymentInitializationError, initialize_collection_transaction, payment_callback_url, squad_configured
+from ..payments import (
+    ensure_squad_dynamic_virtual_account_pool,
+    PaymentInitializationError,
+    initialize_collection_transaction,
+    payment_callback_url,
+    squad_configured,
+    squad_missing_virtual_account_pool,
+)
 from ..rbac import require_workspace_permission
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/dues-cycles", tags=["dues"])
+
+
+def _ensure_squad_pool_ready(*, db: MongoStore, integration, workspace_id: int) -> None:
+    beneficiary_account = str((integration or {}).get("beneficiary_account") or "").strip()
+    ensure_squad_dynamic_virtual_account_pool(beneficiary_account=beneficiary_account or None)
+    db.update_one(
+        "integrations",
+        {"workspace_id": workspace_id, "provider": "squad"},
+        {"pool_status": "ready", "updated_at": datetime.utcnow()},
+    )
 
 
 @router.post("", response_model=schemas.DuesCycleOut)
@@ -109,7 +126,21 @@ def initialize_dues_checkout(
             duration_seconds=duration_seconds,
         )
     except PaymentInitializationError as exc:
-        raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {exc}") from exc
+        try:
+            if squad_missing_virtual_account_pool(exc):
+                _ensure_squad_pool_ready(db=db, integration=squad_integration, workspace_id=workspace_id)
+                checkout = initialize_collection_transaction(
+                    email=email,
+                    amount=amount,
+                    reference=reference,
+                    callback_url=payment_callback_url(f"/workspaces/{workspace_id}/dues"),
+                    metadata={"type": "dues_payment", "workspace_id": workspace_id, "cycle_id": cycle_id, "member_id": payload.member_id},
+                    duration_seconds=duration_seconds,
+                )
+            else:
+                raise exc
+        except PaymentInitializationError as retry_exc:
+            raise HTTPException(status_code=502, detail=f"Unable to initialize Squad collection: {retry_exc}") from retry_exc
 
     payment = db.insert(
         "dues_payments",

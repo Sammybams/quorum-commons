@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from urllib.parse import quote
 
@@ -9,7 +10,16 @@ from fastapi.responses import RedirectResponse
 
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
-from ..payments import squad_base_url, squad_configured
+from ..payments import (
+    ensure_squad_dynamic_virtual_account_pool,
+    PaymentInitializationError,
+    PaymentSimulationError,
+    simulate_squad_virtual_account_payment,
+    squad_base_url,
+    squad_configured,
+    squad_sandbox_mode,
+    verify_squad_transaction,
+)
 from ..rbac import require_workspace_permission
 from ..security import create_signed_token, decode_signed_token
 from ..services.google import (
@@ -21,6 +31,7 @@ from ..services.google import (
     get_google_profile,
     google_configured,
 )
+from .webhooks import _process_confirmed_reference
 from ..services.fireflies import fireflies_configured
 
 
@@ -35,6 +46,50 @@ def _frontend_base() -> str:
         or os.getenv("APP_URL")
         or "http://localhost:3000"
     ).rstrip("/")
+
+
+def _backend_base() -> str:
+    base = (
+        os.getenv("BACKEND_PUBLIC_URL")
+        or os.getenv("API_BASE_URL")
+        or "http://localhost:8000"
+    ).rstrip("/")
+    if base.endswith("/api/v1"):
+        base = base[: -len("/api/v1")]
+    return base
+
+
+def _squad_webhook_url() -> str:
+    return f"{_backend_base()}/api/v1/webhooks/squad"
+
+
+def _public_webhook_reachable() -> bool:
+    base = _backend_base().lower()
+    return not any(marker in base for marker in ("localhost", "127.0.0.1", "0.0.0.0"))
+
+
+def _local_processing_enabled() -> bool:
+    return squad_sandbox_mode() and not _public_webhook_reachable()
+
+
+def _squad_setup_note(*, configured: bool, connected: bool) -> str:
+    if not configured:
+        return "Squad is not available on this server yet."
+    if not connected:
+        return "Connect Squad once and Quorum will start generating payment accounts for dues and contributions."
+    if _local_processing_enabled():
+        return "For local testing, paste the webhook URL into Squad sandbox and keep your public tunnel running."
+    return "Paste the webhook URL into Squad once. Quorum will confirm incoming payments automatically after that."
+
+
+def _lookup_reference_processing(db: MongoStore, *, reference: str) -> tuple[str | None, str | None]:
+    payment = db.find_one("dues_payments", {"gateway_ref": reference})
+    if payment:
+        return str(payment.get("status") or ""), str(payment.get("verification_status") or "")
+    contribution = db.find_one("contributions", {"gateway_ref": reference})
+    if contribution:
+        return str(contribution.get("status") or ""), str(contribution.get("verification_status") or "")
+    return None, None
 
 
 def _google_integration_out(workspace_id: int, integration) -> schemas.IntegrationOut:
@@ -61,7 +116,10 @@ def _squad_integration_out(workspace_id: int, integration) -> schemas.Integratio
         "beneficiary_account": str((integration or {}).get("beneficiary_account") or ""),
         "merchant_name": str((integration or {}).get("merchant_name") or ""),
         "default_duration_seconds": str((integration or {}).get("default_duration_seconds") or 3600),
+        "pool_status": str((integration or {}).get("pool_status") or "not_initialized"),
         "base_url": squad_base_url(),
+        "webhook_url": _squad_webhook_url(),
+        "sandbox_mode": "true" if squad_sandbox_mode() else "false",
     }
     return schemas.IntegrationOut(
         provider="squad",
@@ -130,6 +188,14 @@ def configure_squad(
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     existing = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad"})
+    pool_status = str((existing or {}).get("pool_status") or "not_initialized")
+    bootstrap_account = (payload.beneficiary_account or (existing.get("beneficiary_account") if existing else None) or "").strip() or None
+    try:
+        ensure_squad_dynamic_virtual_account_pool(beneficiary_account=bootstrap_account)
+        pool_status = "ready"
+    except PaymentInitializationError:
+        pool_status = pool_status if pool_status != "not_initialized" else "pending"
+
     data = {
         "workspace_id": workspace_id,
         "provider": "squad",
@@ -138,6 +204,7 @@ def configure_squad(
         "beneficiary_account": payload.beneficiary_account,
         "collection_mode": payload.collection_mode,
         "default_duration_seconds": payload.default_duration_seconds,
+        "pool_status": pool_status,
         "connected_at": existing.get("connected_at") if existing else datetime.utcnow(),
         "updated_at": datetime.utcnow(),
     }
@@ -148,6 +215,106 @@ def configure_squad(
     else:
         integration = db.insert("integrations", data)
     return _squad_integration_out(workspace_id, integration)
+
+
+@router.get("/squad/setup", response_model=schemas.SquadIntegrationSetupOut)
+def get_squad_setup(
+    workspace_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("integrations.manage")),
+):
+    integration = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad", "status": "connected"})
+    configured = squad_configured()
+    connected = integration is not None
+    return schemas.SquadIntegrationSetupOut(
+        webhook_url=_squad_webhook_url(),
+        configured_on_server=configured,
+        connected_for_workspace=connected,
+        sandbox_mode=squad_sandbox_mode(),
+        simulation_supported=squad_sandbox_mode(),
+        public_webhook_reachable=_public_webhook_reachable(),
+        local_processing_enabled=_local_processing_enabled(),
+        note=_squad_setup_note(configured=configured, connected=connected),
+    )
+
+
+@router.post("/squad/simulate-payment", response_model=schemas.SquadSimulationOut)
+def simulate_squad_payment(
+    workspace_id: int,
+    payload: schemas.SquadSimulationRequest,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("dues.manage")),
+):
+    if not squad_configured():
+        raise HTTPException(status_code=400, detail="Squad is not configured on the server")
+    integration = db.find_one("integrations", {"workspace_id": workspace_id, "provider": "squad", "status": "connected"})
+    if not integration:
+        raise HTTPException(status_code=400, detail="Squad is not connected for this workspace")
+
+    query = {"workspace_id": workspace_id, "status": {"$ne": "funded"}}
+    if payload.reference:
+        query["reference"] = payload.reference.strip()
+    records = db.find_many("virtual_accounts", query, sort=[("created_at", DESC)], limit=1)
+    record = records[0] if records else None
+    if not record:
+        raise HTTPException(status_code=404, detail="No Squad virtual account is available to simulate for this workspace")
+    if not record.get("external_account_number"):
+        raise HTTPException(status_code=400, detail="The selected record does not have a virtual account number")
+    if record.get("expected_amount") in (None, ""):
+        raise HTTPException(status_code=400, detail="The selected record does not have an amount to simulate")
+    if str(record.get("status") or "").lower() == "funded":
+        raise HTTPException(status_code=400, detail="This virtual account has already been funded")
+
+    amount = float(record.expected_amount)
+    try:
+        simulate_squad_virtual_account_payment(
+            virtual_account_number=str(record.external_account_number),
+            amount=amount,
+        )
+    except (PaymentInitializationError, PaymentSimulationError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    verification = None
+    try:
+        verification = verify_squad_transaction(str(record.reference))
+    except PaymentInitializationError:
+        verification = None
+
+    verification_status = str((verification.status if verification else "pending") or "pending").lower()
+    locally_processed = False
+    if verification and verification_status in {"success", "successful"} and _local_processing_enabled():
+        _process_confirmed_reference(
+            db,
+            reference=str(record.reference),
+            provider="squad",
+            provider_transaction_ref=verification.provider_transaction_ref,
+        )
+        locally_processed = True
+
+    processed_status, ledger_verification_status = _lookup_reference_processing(db, reference=str(record.reference))
+    if not locally_processed and processed_status not in {"paid", "confirmed"}:
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            time.sleep(1)
+            processed_status, ledger_verification_status = _lookup_reference_processing(db, reference=str(record.reference))
+            if processed_status in {"paid", "confirmed"}:
+                break
+
+    if locally_processed:
+        message = "Test payment completed and Quorum confirmed it locally."
+    elif processed_status in {"paid", "confirmed"}:
+        message = "Test payment completed and Quorum received the confirmation."
+    else:
+        message = "Test payment was sent. If it does not update in a moment, confirm the Squad webhook URL is saved and your public backend is reachable."
+    return schemas.SquadSimulationOut(
+        reference=str(record.reference),
+        virtual_account_number=str(record.external_account_number),
+        amount=amount,
+        provider_status="simulated",
+        verification_status=ledger_verification_status or verification_status,
+        locally_processed=locally_processed,
+        message=message,
+    )
 
 
 @router.delete("/squad", response_model=schemas.AuthStatusResponse)
