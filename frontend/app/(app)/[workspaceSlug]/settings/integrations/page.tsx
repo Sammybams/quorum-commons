@@ -59,8 +59,39 @@ type SquadSetup = {
   note: string;
 };
 
+const SQUAD_EXPIRY_OPTIONS = [
+  { value: "1800", label: "30 minutes" },
+  { value: "3600", label: "1 hour" },
+  { value: "7200", label: "2 hours" },
+  { value: "21600", label: "6 hours" },
+  { value: "43200", label: "12 hours" },
+  { value: "86400", label: "24 hours" },
+];
+
 function formatChannelStatus(status: string) {
   return status.replaceAll("_", " ");
+}
+
+function formatSquadExpiry(value?: string | number | null) {
+  const normalized = String(value || "3600");
+  const matched = SQUAD_EXPIRY_OPTIONS.find((option) => option.value === normalized);
+  if (matched) {
+    return matched.label;
+  }
+  const seconds = Number(normalized);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "1 hour";
+  }
+  if (seconds % 86400 === 0) {
+    return `${seconds / 86400} day${seconds / 86400 === 1 ? "" : "s"}`;
+  }
+  if (seconds % 3600 === 0) {
+    return `${seconds / 3600} hour${seconds / 3600 === 1 ? "" : "s"}`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60} minute${seconds / 60 === 1 ? "" : "s"}`;
+  }
+  return `${seconds} seconds`;
 }
 
 function IntegrationsPageContent({ params }: { params: { workspaceSlug: string } }) {
@@ -75,18 +106,13 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
   const [loading, setLoading] = useState(true);
   const [connectingGoogle, setConnectingGoogle] = useState(false);
   const [savingSquad, setSavingSquad] = useState(false);
-  const [simulatingSquad, setSimulatingSquad] = useState(false);
   const [savingTelegram, setSavingTelegram] = useState(false);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
   const [telegramActionChannelId, setTelegramActionChannelId] = useState<number | null>(null);
   const [whatsAppActionChannelId, setWhatsAppActionChannelId] = useState<number | null>(null);
   const [telegramSetup, setTelegramSetup] = useState<TelegramSetupStatus | null>(null);
-  const [merchantName, setMerchantName] = useState("");
-  const [beneficiaryAccount, setBeneficiaryAccount] = useState("");
   const [durationSeconds, setDurationSeconds] = useState("3600");
   const [squadSetup, setSquadSetup] = useState<SquadSetup | null>(null);
-  const [squadMessage, setSquadMessage] = useState<string | null>(null);
-  const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [telegramLabel, setTelegramLabel] = useState("Community Telegram");
   const [telegramPhoneNumber, setTelegramPhoneNumber] = useState("");
   const [telegramCodes, setTelegramCodes] = useState<Record<number, string>>({});
@@ -113,8 +139,6 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
         setChannels(loadedChannels);
         setTelegramSetup(telegramSetupStatus);
         setSquadSetup(squadSetupStatus);
-        setMerchantName(squad?.metadata?.merchant_name || "");
-        setBeneficiaryAccount(squad?.metadata?.beneficiary_account || "");
         setDurationSeconds(squad?.metadata?.default_duration_seconds || "3600");
         setGroupsByChannel({});
       } catch (err) {
@@ -250,11 +274,9 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
     setSavingSquad(true);
     setError(null);
     try {
-      const saved = await apiPost<Integration, { merchant_name?: string; beneficiary_account?: string; default_duration_seconds: number; collection_mode: string }>(
+      const saved = await apiPost<Integration, { default_duration_seconds: number; collection_mode: string }>(
         `/workspaces/${workspace.id}/integrations/squad`,
         {
-          merchant_name: merchantName.trim() || undefined,
-          beneficiary_account: beneficiaryAccount.trim() || undefined,
           default_duration_seconds: Number(durationSeconds) || 3600,
           collection_mode: "dynamic_virtual_account",
         },
@@ -288,41 +310,6 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
       setError(err instanceof Error ? err.message : "Unable to disconnect Squad.");
     } finally {
       setSavingSquad(false);
-    }
-  }
-
-  async function copySquadWebhook() {
-    if (!squadSetup?.webhook_url) {
-      return;
-    }
-    await navigator.clipboard.writeText(squadSetup.webhook_url);
-    setCopiedWebhook(true);
-    window.setTimeout(() => setCopiedWebhook(false), 1500);
-  }
-
-  async function simulateLatestSquadPayment() {
-    if (!workspace) {
-      return;
-    }
-    setSimulatingSquad(true);
-    setError(null);
-    setSquadMessage(null);
-    try {
-      const result = await apiPost<
-        {
-          ok: boolean;
-          message: string;
-          verification_status: string;
-          locally_processed: boolean;
-          reference: string;
-        },
-        Record<string, never>
-      >(`/workspaces/${workspace.id}/integrations/squad/simulate-payment`, {});
-      setSquadMessage(result.message);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to simulate Squad payment.");
-    } finally {
-      setSimulatingSquad(false);
     }
   }
 
@@ -891,78 +878,58 @@ function IntegrationsPageContent({ params }: { params: { workspaceSlug: string }
               {loading ? "Loading" : squadIntegration?.status === "connected" ? "Connected" : "Not connected"}
             </span>
           </div>
-          <p>Use Squad for dues and contribution payments. Once connected, Quorum will generate payment accounts and record confirmed transfers for this workspace automatically.</p>
+          <p>Use Squad for dues and contribution payments. Quorum will create a fresh virtual account automatically whenever you generate a dues or fundraising payment.</p>
           <div className="mini-list">
             <div>
               <span>Payment rail</span>
               <strong>{squadIntegration?.status === "connected" ? "Ready" : "Not connected"}</strong>
             </div>
             <div>
-              <span>Webhook</span>
-              <strong>{squadSetup?.public_webhook_reachable ? "Ready" : "Needs public URL"}</strong>
-            </div>
-            <div>
-              <span>Testing</span>
-              <strong>{squadSetup?.sandbox_mode ? "Sandbox mode" : "Live mode"}</strong>
-            </div>
-            <div>
               <span>Collection expiry</span>
-              <strong>{squadIntegration?.metadata?.default_duration_seconds || "3600"}s</strong>
+              <strong>{formatSquadExpiry(squadIntegration?.metadata?.default_duration_seconds || "3600")}</strong>
             </div>
           </div>
           {squadSetup ? (
             <div className="form-stack">
-              <label>
-                Webhook URL for Squad
-                <input value={squadSetup.webhook_url} readOnly />
-              </label>
-              <small className="muted-copy">{squadSetup.note}</small>
+              <small className="muted-copy">
+                Turn this on once for the workspace. After that, Quorum will generate payment accounts automatically whenever you start a dues or fundraising collection.
+              </small>
+              <small className="muted-copy">
+                {squadSetup.sandbox_mode ? "Sandbox mode is active." : "Live mode is active."} Payment accounts are created from the `Dues` and `Campaigns` pages when you start a collection.
+              </small>
               {squadIntegration?.metadata?.pool_status === "ready" ? (
                 <small className="muted-copy">Payment account generation is ready for new collections.</small>
-              ) : null}
-              {squadSetup.sandbox_mode ? (
-                <small className="muted-copy">
-                  Sandbox mode is active. You can run a test payment from here after generating a dues or contribution payment account.
-                </small>
               ) : null}
             </div>
           ) : null}
           <div className="form-stack">
             <label>
-              Collection label
-              <input value={merchantName} onChange={(event) => setMerchantName(event.target.value)} placeholder="Community collections" />
+              Collection expiry
+              <span className="select-shell">
+                <select value={durationSeconds} onChange={(event) => setDurationSeconds(event.target.value)}>
+                  {SQUAD_EXPIRY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="material-symbols-outlined" aria-hidden="true">
+                  expand_more
+                </span>
+              </span>
             </label>
-            <label>
-              Settlement account
-              <input value={beneficiaryAccount} onChange={(event) => setBeneficiaryAccount(event.target.value)} placeholder="Optional" />
-            </label>
-            <small className="muted-copy">Optional. Only fill this in if your Squad setup specifically asks for it.</small>
-            <label>
-              Collection expiry (seconds)
-              <input type="number" min="60" max="86400" value={durationSeconds} onChange={(event) => setDurationSeconds(event.target.value)} />
-            </label>
+            <small className="muted-copy">Choose how long each generated payment account stays available before it expires.</small>
           </div>
           <div className="page-actions">
             <button type="button" className="btn-primary" onClick={saveSquad} disabled={savingSquad || !squadIntegration?.configured}>
               {savingSquad ? "Saving..." : squadIntegration?.status === "connected" ? "Save payment settings" : "Connect Squad"}
             </button>
-            {squadSetup?.webhook_url ? (
-              <button type="button" className="btn-secondary" onClick={copySquadWebhook}>
-                {copiedWebhook ? "Copied" : "Copy webhook"}
-              </button>
-            ) : null}
-            {squadSetup?.simulation_supported && squadIntegration?.status === "connected" ? (
-              <button type="button" className="btn-secondary" onClick={simulateLatestSquadPayment} disabled={simulatingSquad}>
-                {simulatingSquad ? "Testing..." : "Run test payment"}
-              </button>
-            ) : null}
             {squadIntegration?.status === "connected" ? (
               <button type="button" className="btn-secondary" onClick={disconnectSquad} disabled={savingSquad}>
                 Disconnect
               </button>
             ) : null}
           </div>
-          {squadMessage ? <p className="status-note">{squadMessage}</p> : null}
           {!squadIntegration?.configured ? <p className="muted-copy">Squad has not been enabled on this server yet.</p> : null}
         </article>
 

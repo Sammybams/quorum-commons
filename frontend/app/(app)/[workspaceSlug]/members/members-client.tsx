@@ -40,6 +40,67 @@ type Invitation = {
   expires_at?: string | null;
 };
 type InviteLink = { id: number; token: string; role_name: string; is_active: boolean };
+type FinancialMetric = {
+  key: string;
+  label: string;
+  value: string;
+  trend: string;
+};
+type FinancialCategory = {
+  category_key: string;
+  title: string;
+  score: number;
+  status: string;
+  summary: string;
+};
+type MemberFinancialPayment = {
+  id: number;
+  cycle_name?: string | null;
+  amount: number;
+  status: string;
+  verification_status?: string | null;
+  provider?: string | null;
+  reference?: string | null;
+  on_time?: boolean | null;
+  occurred_at: string;
+};
+type MemberFinancialProof = {
+  id: number;
+  kind: string;
+  amount?: number | null;
+  reference?: string | null;
+  payment_for?: string | null;
+  verification_state?: string | null;
+  linked_record_label?: string | null;
+  provider_note?: string | null;
+  occurred_at: string;
+};
+type MemberContributionRecord = {
+  id: number;
+  campaign_name?: string | null;
+  stream_name?: string | null;
+  amount: number;
+  status: string;
+  verification_status?: string | null;
+  reference?: string | null;
+  occurred_at: string;
+};
+type MemberFinancialProfile = {
+  member_id: number;
+  member_name: string;
+  role: string;
+  dues_status: string;
+  overall_score: number;
+  overall_grade: string;
+  summary: string;
+  consistency_summary: string;
+  categories: FinancialCategory[];
+  key_metrics: FinancialMetric[];
+  payment_history: MemberFinancialPayment[];
+  verified_proofs: MemberFinancialProof[];
+  contribution_record: MemberContributionRecord[];
+  created_at: string;
+};
 
 export default function MembersClient({
   workspace,
@@ -63,6 +124,10 @@ export default function MembersClient({
   const [copied, setCopied] = useState(false);
   const [copiedInviteId, setCopiedInviteId] = useState<number | null>(null);
   const [removingInvitationId, setRemovingInvitationId] = useState<number | null>(null);
+  const [selectedMemberId, setSelectedMemberId] = useState<number | null>(null);
+  const [selectedFinancialProfile, setSelectedFinancialProfile] = useState<MemberFinancialProfile | null>(null);
+  const [loadingFinancialProfile, setLoadingFinancialProfile] = useState(false);
+  const [financialProfileError, setFinancialProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadInviteData() {
@@ -209,6 +274,27 @@ export default function MembersClient({
     }
   }
 
+  async function openFinancialProfile(memberId: number) {
+    if (selectedMemberId === memberId && selectedFinancialProfile) {
+      setSelectedMemberId(null);
+      setSelectedFinancialProfile(null);
+      setFinancialProfileError(null);
+      return;
+    }
+    setSelectedMemberId(memberId);
+    setLoadingFinancialProfile(true);
+    setFinancialProfileError(null);
+    try {
+      const profile = await apiGet<MemberFinancialProfile>(`/workspaces/${workspace.id}/members/${memberId}/financial-profile`);
+      setSelectedFinancialProfile(profile);
+    } catch (err) {
+      setSelectedFinancialProfile(null);
+      setFinancialProfileError(err instanceof Error ? err.message : "Unable to load financial profile.");
+    } finally {
+      setLoadingFinancialProfile(false);
+    }
+  }
+
   return (
     <section className="page-stack">
       <header className="page-head row">
@@ -311,6 +397,7 @@ export default function MembersClient({
                   <th>Role</th>
                   <th>Readiness</th>
                   <th>Email</th>
+                  <th>Finance</th>
                 </tr>
               </thead>
               <tbody>
@@ -347,6 +434,11 @@ export default function MembersClient({
                       </div>
                     </td>
                     <td>{member.email || "-"}</td>
+                    <td>
+                      <button type="button" className="btn-ghost" onClick={() => openFinancialProfile(member.id)}>
+                        {selectedMemberId === member.id && selectedFinancialProfile ? "Hide profile" : "Financial profile"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -354,6 +446,180 @@ export default function MembersClient({
           </div>
         )}
       </section>
+
+      {selectedMemberId ? (
+        <section className="panel-card">
+          <div className="card-head compact">
+            <div>
+              <p className="eyebrow">Member finance</p>
+              <h2>
+                {selectedFinancialProfile?.member_name || members.find((member) => member.id === selectedMemberId)?.full_name || "Member profile"}
+              </h2>
+              <p>{selectedFinancialProfile?.summary || "Loading financial profile..."}</p>
+            </div>
+            {selectedFinancialProfile ? (
+              <span className={`status-pill ${scoreTone(selectedFinancialProfile.overall_score)}`}>
+                {selectedFinancialProfile.overall_grade} · {selectedFinancialProfile.overall_score.toFixed(1)}/10
+              </span>
+            ) : null}
+          </div>
+
+          {loadingFinancialProfile ? <p className="empty-block">Loading member financial profile...</p> : null}
+          {financialProfileError ? <p className="form-error">{financialProfileError}</p> : null}
+
+          {selectedFinancialProfile ? (
+            <div className="page-stack">
+              <p className="muted-copy">{selectedFinancialProfile.consistency_summary}</p>
+
+              <div className="mini-list">
+                {selectedFinancialProfile.key_metrics.map((metric) => (
+                  <div key={metric.key}>
+                    <span>{metric.label}</span>
+                    <strong>{metric.value}</strong>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mini-list">
+                {selectedFinancialProfile.categories.map((category) => (
+                  <div key={category.category_key}>
+                    <span>{category.title}</span>
+                    <strong>{category.score.toFixed(1)}/10</strong>
+                    <small>{category.summary}</small>
+                  </div>
+                ))}
+              </div>
+
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th colSpan={5}>Payment history</th>
+                    </tr>
+                    <tr>
+                      <th>Date</th>
+                      <th>Cycle</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Reference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedFinancialProfile.payment_history.length ? (
+                      selectedFinancialProfile.payment_history.map((payment) => (
+                        <tr key={payment.id}>
+                          <td>{new Date(payment.occurred_at).toLocaleDateString()}</td>
+                          <td>
+                            <div>{payment.cycle_name || "Dues payment"}</div>
+                            {payment.on_time !== null && payment.on_time !== undefined ? (
+                              <small>{payment.on_time ? "On time" : "After deadline"}</small>
+                            ) : null}
+                          </td>
+                          <td>NGN {payment.amount.toLocaleString()}</td>
+                          <td>
+                            <span className={`status-pill ${payment.status === "confirmed" || payment.status === "paid" ? "ok" : "pending"}`}>
+                              {payment.status}
+                            </span>
+                            {payment.verification_status ? <small>{payment.verification_status}</small> : null}
+                          </td>
+                          <td>{payment.reference || "-"}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="empty-block">No payment history yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th colSpan={5}>Contribution record</th>
+                    </tr>
+                    <tr>
+                      <th>Date</th>
+                      <th>Campaign</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Reference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedFinancialProfile.contribution_record.length ? (
+                      selectedFinancialProfile.contribution_record.map((contribution) => (
+                        <tr key={contribution.id}>
+                          <td>{new Date(contribution.occurred_at).toLocaleDateString()}</td>
+                          <td>
+                            <div>{contribution.campaign_name || "Contribution"}</div>
+                            {contribution.stream_name ? <small>{contribution.stream_name}</small> : null}
+                          </td>
+                          <td>NGN {contribution.amount.toLocaleString()}</td>
+                          <td>
+                            <span className={`status-pill ${contribution.status === "confirmed" || contribution.status === "paid" ? "ok" : "pending"}`}>
+                              {contribution.status}
+                            </span>
+                            {contribution.verification_status ? <small>{contribution.verification_status}</small> : null}
+                          </td>
+                          <td>{contribution.reference || "-"}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="empty-block">No contribution record yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th colSpan={5}>Verified receipts and proofs</th>
+                    </tr>
+                    <tr>
+                      <th>Date</th>
+                      <th>Proof</th>
+                      <th>Amount</th>
+                      <th>Verification</th>
+                      <th>Reference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedFinancialProfile.verified_proofs.length ? (
+                      selectedFinancialProfile.verified_proofs.map((proof) => (
+                        <tr key={proof.id}>
+                          <td>{new Date(proof.occurred_at).toLocaleDateString()}</td>
+                          <td>
+                            <div>{proof.linked_record_label || proof.payment_for || "Payment proof"}</div>
+                            {proof.provider_note ? <small>{proof.provider_note}</small> : null}
+                          </td>
+                          <td>{proof.amount ? `NGN ${proof.amount.toLocaleString()}` : "-"}</td>
+                          <td>
+                            <span className={`status-pill ${proof.verification_state === "matched" ? "ok" : "pending"}`}>
+                              {proof.verification_state || "captured"}
+                            </span>
+                          </td>
+                          <td>{proof.reference || "-"}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="empty-block">No verified proofs linked yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {inviteOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setInviteOpen(false)}>
@@ -516,6 +782,16 @@ function deliveryLabel(status?: string | null, provider?: string | null, sender?
     return "Google or SMTP delivery not configured";
   }
   return "email pending";
+}
+
+function scoreTone(score: number) {
+  if (score >= 8) {
+    return "ok";
+  }
+  if (score >= 6) {
+    return "pending";
+  }
+  return "danger";
 }
 
 function initials(name: string) {

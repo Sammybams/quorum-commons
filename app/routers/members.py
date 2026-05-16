@@ -4,6 +4,7 @@ from .. import models, schemas
 from ..database import DESC, MongoStore, get_db
 from ..membership import role_key_from_input, sync_workspace_members_from_legacy
 from ..rbac import MEMBER_ROLE_KEY, ensure_default_roles, require_workspace_permission, role_display_name
+from ..services.financial_health import build_member_financial_profile
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/members", tags=["members"])
 
@@ -84,6 +85,32 @@ def list_members(workspace_id: int, db: MongoStore = Depends(get_db)):
     sync_workspace_members_from_legacy(db, workspace)
     memberships = db.find_many("workspace_members", {"workspace_id": workspace_id}, sort=[("joined_at", DESC), ("created_at", DESC)])
     return [_member_out(db, membership) for membership in memberships]
+
+
+@router.get("/{member_id}/financial-profile", response_model=schemas.MemberFinancialProfileOut)
+def get_member_financial_profile(
+    workspace_id: int,
+    member_id: int,
+    db: MongoStore = Depends(get_db),
+    _membership=Depends(require_workspace_permission("members.view")),
+):
+    workspace = db.find_by_id("workspaces", workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    membership = db.find_one("workspace_members", {"workspace_id": workspace_id, "id": member_id})
+    if not membership:
+        raise HTTPException(status_code=404, detail="Member not found")
+    user = db.find_by_id("users", membership.user_id)
+    role = db.find_by_id("roles", membership.role_id)
+    return schemas.MemberFinancialProfileOut(
+        **build_member_financial_profile(
+            db,
+            workspace_id=workspace_id,
+            member=membership,
+            user=user,
+            role_name=role_display_name(role),
+        )
+    )
 
 
 @router.post("/{member_id}/transfer-role", response_model=schemas.AuthStatusResponse)

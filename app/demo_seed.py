@@ -14,6 +14,7 @@ from .services.reports import compile_report_snapshot, fallback_report_narrative
 DEMO_WORKSPACE_SLUG = "engineering-faculty-council-demo"
 DEMO_WORKSPACE_NAME = "Engineering Faculty Council"
 DEMO_OWNER_EMAIL = "demo-chair@quorum.local"
+DEMO_SEED_VERSION = 3
 
 
 def _ensure_user(db: MongoStore, *, full_name: str, email: str, phone: str | None = None) -> models.User:
@@ -50,8 +51,17 @@ def _ensure_workspace(db: MongoStore) -> models.Workspace:
             "name": DEMO_WORKSPACE_NAME,
             "slug": DEMO_WORKSPACE_SLUG,
             "description": "Faculty body demo workspace with Squad-backed finance, synced community inbox highlights, extracted opportunities, and AI-assisted operations.",
+            "demo_seed_version": None,
         },
     )
+
+
+def _existing_demo_membership(db: MongoStore, workspace: models.Workspace) -> models.WorkspaceMember | None:
+    owner = db.find_one("users", {"email": DEMO_OWNER_EMAIL})
+    if not owner:
+        return None
+    membership = db.find_one("workspace_members", {"workspace_id": workspace.id, "user_id": owner.id, "status": "active"})
+    return membership
 
 
 def _ensure_member_record(
@@ -1535,6 +1545,10 @@ def _seed_financial_health_snapshots(db: MongoStore, workspace: models.Workspace
 
 def ensure_demo_workspace(db: MongoStore) -> tuple[models.Workspace, models.WorkspaceMember]:
     workspace = _ensure_workspace(db)
+    if int(workspace.get("demo_seed_version") or 0) == DEMO_SEED_VERSION:
+        membership = _existing_demo_membership(db, workspace)
+        if membership:
+            return workspace, membership
     owner_membership, memberships = _seed_members(db, workspace)
     _seed_member_invites(db, workspace, owner_membership)
     _seed_squad_integration(db, workspace)
@@ -1548,4 +1562,6 @@ def ensure_demo_workspace(db: MongoStore) -> tuple[models.Workspace, models.Work
     _seed_community_intelligence(db, workspace, memberships)
     _seed_reports(db, workspace, owner_membership)
     _seed_financial_health_snapshots(db, workspace)
+    workspace["demo_seed_version"] = DEMO_SEED_VERSION
+    db.save("workspaces", workspace)
     return workspace, owner_membership

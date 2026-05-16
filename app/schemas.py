@@ -935,6 +935,58 @@ class FinancialHealthSnapshotOut(BaseModel):
     created_at: datetime
 
 
+class MemberFinancialPaymentOut(BaseModel):
+    id: int
+    cycle_name: str | None = None
+    amount: float
+    status: str
+    verification_status: str | None = None
+    provider: str | None = None
+    reference: str | None = None
+    on_time: bool | None = None
+    occurred_at: datetime
+
+
+class MemberFinancialProofOut(BaseModel):
+    id: int
+    kind: str
+    amount: float | None = None
+    reference: str | None = None
+    payment_for: str | None = None
+    verification_state: str | None = None
+    linked_record_label: str | None = None
+    provider_note: str | None = None
+    occurred_at: datetime
+
+
+class MemberContributionRecordOut(BaseModel):
+    id: int
+    campaign_name: str | None = None
+    stream_name: str | None = None
+    amount: float
+    status: str
+    verification_status: str | None = None
+    reference: str | None = None
+    occurred_at: datetime
+
+
+class MemberFinancialProfileOut(BaseModel):
+    member_id: int
+    member_name: str
+    role: str
+    dues_status: str
+    overall_score: float
+    overall_grade: str
+    summary: str
+    consistency_summary: str
+    categories: list[FinancialHealthCategoryOut] = Field(default_factory=list)
+    key_metrics: list[FinancialHealthMetricOut] = Field(default_factory=list)
+    payment_history: list[MemberFinancialPaymentOut] = Field(default_factory=list)
+    verified_proofs: list[MemberFinancialProofOut] = Field(default_factory=list)
+    contribution_record: list[MemberContributionRecordOut] = Field(default_factory=list)
+    created_at: datetime
+
+
 class NotificationOut(BaseModel):
     id: int
     workspace_id: int
