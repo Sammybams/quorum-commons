@@ -30,6 +30,7 @@ type Integration = {
 type Invitation = {
   id: number;
   email: string;
+  phone_number?: string | null;
   role_name: string;
   token: string;
   status: string;
@@ -54,6 +55,7 @@ export default function MembersClient({
   const [googleIntegration, setGoogleIntegration] = useState<Integration | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [roleId, setRoleId] = useState<number | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
@@ -186,10 +188,11 @@ export default function MembersClient({
     setError(null);
 
     try {
-      const invitation = await apiPost<Invitation, { email: string; role_id: number; note?: string }>(
+      const invitation = await apiPost<Invitation, { email: string; phone_number?: string; role_id: number; note?: string }>(
         `/workspaces/${workspace.id}/invitations`,
         {
           email: email.trim().toLowerCase(),
+          phone_number: phoneNumber.trim() || undefined,
           role_id: roleId,
           note: note.trim() || undefined,
         },
@@ -197,6 +200,7 @@ export default function MembersClient({
 
       setPendingInvitations((current) => [invitation, ...current]);
       setEmail("");
+      setPhoneNumber("");
       setNote("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to send invitation.");
@@ -261,6 +265,7 @@ export default function MembersClient({
                   <strong>{invitation.email}</strong>
                   <span>
                     {invitation.role_name} · {deliveryLabel(invitation.email_delivery_status, invitation.email_delivery_provider, invitation.email_delivery_sender)}
+                    {invitation.phone_number ? ` · WhatsApp ${invitation.phone_number}` : ""}
                     {invitation.expires_at ? ` · expires ${new Date(invitation.expires_at).toLocaleDateString()}` : ""}
                   </span>
                 </div>
@@ -405,6 +410,18 @@ export default function MembersClient({
                 />
               </label>
               <label>
+                Phone number
+                <input
+                  type="tel"
+                  placeholder="+2348012345678"
+                  value={phoneNumber}
+                  onChange={(event) => setPhoneNumber(event.target.value)}
+                />
+                <small className="muted-copy">
+                  Optional. If added, Quorum can send WhatsApp alerts for assigned tasks and matched opportunities.
+                </small>
+              </label>
+              <label>
                 Role
                 <span className="select-shell">
                   <select value={roleId || ""} onChange={(event) => setRoleId(Number(event.target.value))}>
@@ -442,7 +459,10 @@ export default function MembersClient({
                     <div className="invite-modal-row" key={invitation.id}>
                       <div>
                         <span>{invitation.email}</span>
-                        <strong>{invitation.role_name} · {deliveryLabel(invitation.email_delivery_status, invitation.email_delivery_provider, invitation.email_delivery_sender)}</strong>
+                        <strong>
+                          {invitation.role_name} · {deliveryLabel(invitation.email_delivery_status, invitation.email_delivery_provider, invitation.email_delivery_sender)}
+                          {invitation.phone_number ? ` · WhatsApp ${invitation.phone_number}` : ""}
+                        </strong>
                       </div>
                       <button
                         type="button"

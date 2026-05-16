@@ -312,7 +312,11 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
             },
         )
 
-    status = _artifact_initial_status(artifact.artifact_type, artifact.confidence)
+    status = _artifact_initial_status(
+        artifact.artifact_type,
+        artifact.confidence,
+        extracted_payload=artifact.extracted_payload,
+    )
     if artifact.artifact_type == "other" and message.message_type in {"image", "document"} and has_media_context:
         status = "needs_review"
     stored = db.insert(
@@ -336,10 +340,19 @@ def _analyze_and_store_artifact(db: MongoStore, *, message, group_name: str | No
     return stored
 
 
-def _artifact_initial_status(artifact_type: str, confidence: float) -> str:
+def _artifact_initial_status(artifact_type: str, confidence: float, *, extracted_payload: dict | None = None) -> str:
     normalized_type = str(artifact_type or "other").strip().lower()
     if normalized_type == "other":
         return "ignored"
+    if normalized_type == "task_signal":
+        payload = extracted_payload or {}
+        has_assignment_hint = bool(str(payload.get("assignee_hint") or "").strip())
+        has_due_hint = bool(
+            str(payload.get("due_hint") or payload.get("deadline") or payload.get("event_date") or "").strip()
+        )
+        if confidence >= 0.75 or (confidence >= 0.6 and (has_assignment_hint or has_due_hint)):
+            return "ready"
+        return "needs_review"
     if confidence >= 0.75:
         return "ready"
     return "needs_review"

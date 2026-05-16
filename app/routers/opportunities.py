@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from .. import schemas
 from ..database import DESC, MongoStore, get_db
 from ..rbac import require_workspace_permission
-from ..services.notifications import create_notification, notify_workspace_admins
+from ..services.notifications import notify_member_opportunity_workflow, notify_workspace_admins
 from ..services.opportunities import refresh_opportunity_matches, top_matches_for_opportunity
 
 
@@ -126,22 +126,13 @@ def update_opportunity_match_status(
     if workspace:
         member = db.find_one("workspace_members", {"workspace_id": workspace_id, "id": match.member_id})
         if member and payload.status in {"contacted", "assigned"}:
-            opportunity_title = opportunity.get("title") or "an opportunity"
-            body = (
-                f"A community lead has contacted you about {opportunity_title}."
-                if payload.status == "contacted"
-                else f"You have been assigned to {opportunity_title}."
-            )
-            create_notification(
+            notify_member_opportunity_workflow(
                 db,
                 workspace_id=workspace_id,
-                user_id=member.user_id,
-                title="Opportunity update",
-                body=body,
-                notification_type="opportunity_workflow",
-                action_url=f"/{workspace.slug}/opportunities",
-                metadata={"opportunity_id": opportunity_id, "match_id": match_id, "status": payload.status},
-                dedupe_key=f"match-status:{match_id}:{payload.status}",
+                member_id=member.id,
+                opportunity=opportunity,
+                match_id=match_id,
+                status=payload.status,
             )
     if payload.status == "assigned":
         if opportunity and str(opportunity.get("status") or "").strip().lower() == "open":

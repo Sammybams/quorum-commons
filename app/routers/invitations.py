@@ -35,6 +35,7 @@ def create_invitation(
         {
             "workspace_id": workspace_id,
             "email": payload.email.strip().lower(),
+            "phone_number": payload.phone_number.strip() if payload.phone_number else None,
             "role_id": role.id,
             "invited_by_user_id": membership.user_id,
             "token": secrets.token_urlsafe(32),
@@ -156,24 +157,25 @@ def accept_invitation(token: str, payload: schemas.InvitationAccept, db: MongoSt
         raise HTTPException(status_code=404, detail="Invitation not found")
 
     user = db.find_one("users", {"email": invitation.email})
+    resolved_phone = payload.phone_number or invitation.get("phone_number")
     if user is None:
         user = db.insert(
             "users",
             {
                 "full_name": payload.full_name.strip(),
                 "email": invitation.email,
-                "phone": payload.phone_number,
+                "phone": resolved_phone,
                 "password_hash": hash_password(payload.password),
                 "email_verified": False,
             },
         )
     else:
         user["full_name"] = payload.full_name.strip()
-        user["phone"] = payload.phone_number or user.get("phone")
+        user["phone"] = resolved_phone or user.get("phone")
         user["password_hash"] = hash_password(payload.password)
         user = db.save("users", user)
 
-    membership = _ensure_membership(db, workspace, user, role)
+    membership = _ensure_membership(db, workspace, user, role, phone_number=resolved_phone)
     invitation["status"] = "accepted"
     invitation["accepted_at"] = datetime.utcnow()
     db.save("invitations", invitation)
@@ -229,7 +231,7 @@ def accept_invite_link(token: str, payload: schemas.InviteLinkAccept, db: MongoS
         user["password_hash"] = hash_password(payload.password)
         user = db.save("users", user)
 
-    membership = _ensure_membership(db, workspace, user, role)
+    membership = _ensure_membership(db, workspace, user, role, phone_number=payload.phone_number)
     return _auth_response(db, workspace, membership)
 
 
@@ -239,6 +241,7 @@ def _invitation_out(db: MongoStore, invitation: models.Invitation) -> schemas.In
         id=invitation.id,
         workspace_id=invitation.workspace_id,
         email=invitation.email,
+        phone_number=invitation.get("phone_number"),
         role_id=invitation.role_id,
         role_name=role_display_name(role) if role else "Unknown role",
         token=invitation.token,
@@ -270,12 +273,15 @@ def _ensure_membership(
     workspace: models.Workspace,
     user: models.User,
     role: models.Role,
+    *,
+    phone_number: str | None = None,
 ) -> models.WorkspaceMember:
     membership = db.find_one("workspace_members", {"workspace_id": workspace.id, "user_id": user.id})
     if membership:
         membership["role_id"] = role.id
         membership["status"] = "active"
         membership["is_general_member"] = role.key == MEMBER_ROLE_KEY
+        membership["phone_number"] = phone_number or membership.get("phone_number") or user.get("phone")
         return db.save("workspace_members", membership)
 
     return db.insert(
@@ -286,6 +292,7 @@ def _ensure_membership(
             "role_id": role.id,
             "is_general_member": role.key == MEMBER_ROLE_KEY,
             "dues_status": "defaulter",
+            "phone_number": phone_number or user.get("phone"),
             "status": "active",
             "joined_at": datetime.utcnow(),
         },

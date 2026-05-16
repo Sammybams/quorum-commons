@@ -5,7 +5,7 @@ from typing import Any
 
 from ..database import DESC, MongoStore
 from ..rbac import role_display_name
-from .notifications import create_notification
+from .notifications import notify_member_opportunity_recommendation
 
 
 def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str, Any]]:
@@ -56,15 +56,11 @@ def refresh_opportunity_matches(db: MongoStore, *, opportunity) -> list[dict[str
             and workspace
             and (not existing or str(existing.get("status") or "").strip().lower() == "recommended")
         ):
-            create_notification(
+            notify_member_opportunity_recommendation(
                 db,
                 workspace_id=workspace_id,
-                user_id=member.user_id,
-                title="Recommended opportunity for you",
-                body=f"{opportunity.get('title') or 'A community opportunity'} looks relevant to your profile.",
-                notification_type="opportunity_recommendation",
-                action_url=f"/{workspace.slug}/opportunities",
-                metadata={"opportunity_id": opportunity.id, "member_id": member.id},
+                member_id=member.id,
+                opportunity=opportunity,
                 dedupe_key=f"opportunity:{opportunity.id}:member:{member.id}",
             )
 

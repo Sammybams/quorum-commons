@@ -47,6 +47,11 @@ function sanitizePhoneNumber(value) {
   return String(value || '').replace(/\D+/g, '')
 }
 
+function directRecipientJid(value) {
+  const digits = sanitizePhoneNumber(value)
+  return digits ? `${digits}@s.whatsapp.net` : null
+}
+
 function normalizePairingMode(value) {
   const normalized = String(value || 'qr').trim().toLowerCase().replace(/-/g, '_')
   return normalized === 'pairing_code' ? 'pairing_code' : 'qr'
@@ -745,6 +750,26 @@ app.get('/internal/sessions/:channelId/groups', async (req, res) => {
     res.json({ channelId, groups })
   } catch (error) {
     logger.error({ channelId, error: String(error) }, 'Failed to discover WhatsApp groups')
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+app.post('/internal/sessions/:channelId/send-message', async (req, res) => {
+  const channelId = Number(req.params.channelId)
+  const session = sessions.get(String(channelId))
+  if (!session?.socket || session.state !== 'connected') {
+    return res.status(409).json({ error: 'session_not_connected' })
+  }
+  const text = String(req.body?.text || '').trim()
+  const jid = String(req.body?.jid || '').trim() || directRecipientJid(req.body?.recipientPhoneNumber)
+  if (!jid || !text) {
+    return res.status(400).json({ error: 'jid and text are required' })
+  }
+  try {
+    await session.socket.sendMessage(jid, { text })
+    res.json({ ok: true, jid })
+  } catch (error) {
+    logger.error({ channelId, jid, error: String(error) }, 'Failed to send WhatsApp direct message')
     res.status(500).json({ error: String(error) })
   }
 })

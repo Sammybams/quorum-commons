@@ -520,6 +520,7 @@ class AuthStatusResponse(BaseModel):
 
 class InvitationCreate(BaseModel):
     email: str
+    phone_number: str | None = None
     role_id: int
     note: str | None = None
 
@@ -528,6 +529,7 @@ class InvitationOut(BaseModel):
     id: int
     workspace_id: int
     email: str
+    phone_number: str | None = None
     role_id: int
     role_name: str
     token: str

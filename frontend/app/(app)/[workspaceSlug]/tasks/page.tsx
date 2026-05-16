@@ -11,7 +11,7 @@ type Task = {
 
 export default async function TasksPage({ params }: { params: { workspaceSlug: string } }) {
   const workspace = await getWorkspaceBySlug(params.workspaceSlug);
-  const tasks = await apiGet<Task[]>(`/workspaces/${workspace.id}/tasks`);
+  const tasks = await apiGet<Task[]>(`/workspaces/${workspace.id}/tasks`, { revalidateSeconds: 0 });
 
   return (
     <section className="page-stack">
