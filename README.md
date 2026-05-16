@@ -11,7 +11,7 @@ The product is designed to feel less like a generic admin panel and more like a 
 
 ## What Quorum Does
 
-Quorum brings together the core workflows community operators usually scatter across spreadsheets, WhatsApp, Google Forms, payment screenshots, and ad hoc notes:
+Quorum brings together the core workflows community operators usually scatter across spreadsheets, WhatsApp, Google Forms, payment screenshots and ad hoc notes:
 
 - workspace creation for community groups
 - multi-workspace sign-in for a single user
